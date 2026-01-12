@@ -19,7 +19,7 @@
             ],
             "enabled": true
         },
-        "memory-mcp-odoo-mobile": {
+        "memory-mcp-test": {
             "type": "local",
             "command": [
                 "docker",
@@ -28,11 +28,11 @@
                 "--rm",
                 "-i",
                 "--name",
-                "memory-mcp-odoo-mobile",
+                "memory-mcp-test",
                 "-v",
-                "memory-mcp-odoo-mobile-data:/data",
+                "memory-mcp-data-test:/data",
                 "-v",
-                "/home/unnamed/project/mobile-odoo:/project:ro",
+                "/home/unnamed/project/memory-mcp-1file:/project:ro",
                 "-e",
                 "RECONNECT_TIMEOUT=60",
                 "ghcr.io/pomazanbohdan/memory-mcp-1file:latest"

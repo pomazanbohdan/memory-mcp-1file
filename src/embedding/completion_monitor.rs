@@ -14,7 +14,12 @@ pub async fn run_completion_monitor(state: Arc<AppState>) {
     loop {
         interval.tick().await;
 
-        let projects = match state.storage.list_projects().await {
+        let storage = match state.storage() {
+            Some(s) => s,
+            None => continue,
+        };
+
+        let projects = match storage.list_projects().await {
             Ok(p) => p,
             Err(e) => {
                 tracing::warn!("Completion monitor: failed to list projects: {}", e);
@@ -35,7 +40,11 @@ pub async fn run_completion_monitor(state: Arc<AppState>) {
 }
 
 async fn check_and_complete_project(state: &Arc<AppState>, project_id: &str) -> crate::Result<()> {
-    let status = match state.storage.get_index_status(project_id).await? {
+    let storage = state
+        .storage()
+        .ok_or_else(|| crate::AppError::Storage("Storage not initialized".to_string()))?;
+
+    let status = match storage.get_index_status(project_id).await? {
         Some(s) => s,
         None => return Ok(()),
     };
@@ -44,10 +53,10 @@ async fn check_and_complete_project(state: &Arc<AppState>, project_id: &str) -> 
         return Ok(());
     }
 
-    let total_chunks = state.storage.count_chunks(project_id).await?;
-    let total_symbols = state.storage.count_symbols(project_id).await?;
-    let embedded_chunks = state.storage.count_embedded_chunks(project_id).await?;
-    let embedded_symbols = state.storage.count_embedded_symbols(project_id).await?;
+    let total_chunks = storage.count_chunks(project_id).await?;
+    let total_symbols = storage.count_symbols(project_id).await?;
+    let embedded_chunks = storage.count_embedded_chunks(project_id).await?;
+    let embedded_symbols = storage.count_embedded_symbols(project_id).await?;
 
     let chunks_complete = embedded_chunks >= total_chunks;
     let symbols_complete = embedded_symbols >= total_symbols;
@@ -59,7 +68,7 @@ async fn check_and_complete_project(state: &Arc<AppState>, project_id: &str) -> 
         updated_status.total_chunks = total_chunks;
         updated_status.total_symbols = total_symbols;
 
-        state.storage.update_index_status(updated_status).await?;
+        storage.update_index_status(updated_status).await?;
 
         tracing::info!(
             project_id = %project_id,

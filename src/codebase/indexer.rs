@@ -5,7 +5,7 @@ use tokio::fs;
 
 use crate::config::AppState;
 use crate::storage::StorageBackend;
-use crate::types::{IndexState, IndexStatus};
+use crate::types::{CodeChunk, CodeSymbol, IndexState, IndexStatus};
 use crate::Result;
 
 use super::chunker::chunk_file;
@@ -18,6 +18,10 @@ use crate::embedding::{EmbeddingRequest, EmbeddingTarget};
 use crate::types::symbol::CodeReference;
 
 pub async fn index_project(state: Arc<AppState>, project_path: &Path) -> Result<IndexStatus> {
+    let storage = state
+        .storage()
+        .ok_or_else(|| crate::AppError::Storage("Storage not initialized".to_string()))?;
+
     let project_id = project_path
         .file_name()
         .and_then(|n| n.to_str())
@@ -27,8 +31,8 @@ pub async fn index_project(state: Arc<AppState>, project_path: &Path) -> Result<
     let mut status = IndexStatus::new(project_id.clone());
     let monitor = state.progress.get_or_create(&project_id).await;
 
-    state.storage.delete_project_chunks(&project_id).await?;
-    state.storage.delete_project_symbols(&project_id).await?;
+    storage.delete_project_chunks(&project_id).await?;
+    storage.delete_project_symbols(&project_id).await?;
 
     let files = scan_directory(project_path)?;
     status.total_files = files.len() as u32;
@@ -39,7 +43,7 @@ pub async fn index_project(state: Arc<AppState>, project_path: &Path) -> Result<
         .indexed_files
         .store(0, std::sync::atomic::Ordering::Relaxed);
 
-    state.storage.update_index_status(status.clone()).await?;
+    storage.update_index_status(status.clone()).await?;
 
     let batch_size = 20;
     let mut chunk_buffer = Vec::with_capacity(batch_size);
@@ -66,7 +70,7 @@ pub async fn index_project(state: Arc<AppState>, project_path: &Path) -> Result<
             if chunk_buffer.len() >= batch_size {
                 let batch = std::mem::take(&mut chunk_buffer);
                 let _permit = state.db_semaphore.acquire().await;
-                if let Ok(results) = state.storage.create_code_chunks_batch(batch).await {
+                if let Ok(results) = storage.create_code_chunks_batch(batch).await {
                     for (id, chunk) in results {
                         let _ = state
                             .embedding_queue
@@ -99,19 +103,20 @@ pub async fn index_project(state: Arc<AppState>, project_path: &Path) -> Result<
             status.total_symbols += 1;
 
             if symbol_buffer.len() >= batch_size {
-                let batch = std::mem::take(&mut symbol_buffer);
+                let batch: Vec<CodeSymbol> = std::mem::take(&mut symbol_buffer);
                 let _permit = state.db_semaphore.acquire().await;
-                // 1. Insert batch to get IDs
-                if let Ok(ids) = state.storage.create_code_symbols_batch(batch.clone()).await {
-                    // 2. Queue for async embedding
+                if let Ok(ids) = storage.create_code_symbols_batch(batch.clone()).await {
+                    let ids: Vec<String> = ids;
                     for (id, sym) in ids.iter().zip(batch.iter()) {
                         if let Some(sig) = &sym.signature {
+                            let text: String = sig.clone();
+                            let id_str: String = id.clone();
                             let _ = state
                                 .embedding_queue
                                 .send(EmbeddingRequest {
-                                    text: sig.clone(),
+                                    text,
                                     responder: None,
-                                    target: Some(EmbeddingTarget::Symbol(id.clone())),
+                                    target: Some(EmbeddingTarget::Symbol(id_str)),
                                     retry_count: 0,
                                 })
                                 .await;
@@ -119,16 +124,10 @@ pub async fn index_project(state: Arc<AppState>, project_path: &Path) -> Result<
                     }
                 }
 
-                // 3. Flush pending relations after symbols are in DB
                 if !relation_buffer.is_empty() {
                     let refs = std::mem::take(&mut relation_buffer);
-                    let stats = create_symbol_relations(
-                        state.storage.as_ref(),
-                        &project_id,
-                        &refs,
-                        &symbol_index,
-                    )
-                    .await;
+                    let stats =
+                        create_symbol_relations(storage, &project_id, &refs, &symbol_index).await;
                     total_relation_stats.created += stats.created;
                     total_relation_stats.failed += stats.failed;
                     total_relation_stats.unresolved += stats.unresolved;
@@ -145,7 +144,7 @@ pub async fn index_project(state: Arc<AppState>, project_path: &Path) -> Result<
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
         if status.indexed_files.is_multiple_of(10) {
-            if let Err(e) = state.storage.update_index_status(status.clone()).await {
+            if let Err(e) = storage.update_index_status(status.clone()).await {
                 tracing::warn!("Failed to update intermediate status: {}", e);
             }
         }
@@ -153,7 +152,7 @@ pub async fn index_project(state: Arc<AppState>, project_path: &Path) -> Result<
 
     if !chunk_buffer.is_empty() {
         let _permit = state.db_semaphore.acquire().await;
-        if let Ok(results) = state.storage.create_code_chunks_batch(chunk_buffer).await {
+        if let Ok(results) = storage.create_code_chunks_batch(chunk_buffer).await {
             for (id, chunk) in results {
                 let _ = state
                     .embedding_queue
@@ -171,10 +170,7 @@ pub async fn index_project(state: Arc<AppState>, project_path: &Path) -> Result<
     if !symbol_buffer.is_empty() {
         let batch = symbol_buffer;
         let _permit = state.db_semaphore.acquire().await;
-        let ids = state
-            .storage
-            .create_code_symbols_batch(batch.clone())
-            .await?;
+        let ids: Vec<String> = storage.create_code_symbols_batch(batch.clone()).await?;
 
         for (id, sym) in ids.iter().zip(batch.iter()) {
             if let Some(sig) = &sym.signature {
@@ -191,21 +187,14 @@ pub async fn index_project(state: Arc<AppState>, project_path: &Path) -> Result<
         }
     }
 
-    // Final flush of remaining relations
     if !relation_buffer.is_empty() {
-        let stats = create_symbol_relations(
-            state.storage.as_ref(),
-            &project_id,
-            &relation_buffer,
-            &symbol_index,
-        )
-        .await;
+        let stats =
+            create_symbol_relations(storage, &project_id, &relation_buffer, &symbol_index).await;
         total_relation_stats.created += stats.created;
         total_relation_stats.failed += stats.failed;
         total_relation_stats.unresolved += stats.unresolved;
     }
 
-    // Log relation stats
     if total_relation_stats.created > 0 || total_relation_stats.failed > 0 {
         tracing::info!(
             created = total_relation_stats.created,
@@ -218,28 +207,27 @@ pub async fn index_project(state: Arc<AppState>, project_path: &Path) -> Result<
     status.status = IndexState::EmbeddingPending;
     status.completed_at = Some(surrealdb::sql::Datetime::default());
 
-    state.storage.update_index_status(status.clone()).await?;
+    storage.update_index_status(status.clone()).await?;
 
     Ok(status)
 }
 
-/// Incremental re-index for changed files only
 pub async fn incremental_index(
     state: Arc<AppState>,
     project_id: &str,
     changed_paths: Vec<std::path::PathBuf>,
 ) -> Result<usize> {
+    let storage = state
+        .storage()
+        .ok_or_else(|| crate::AppError::Storage("Storage not initialized".to_string()))?;
+
     let mut updated = 0;
 
     for path in changed_paths {
         let path_str = path.to_string_lossy().to_string();
 
         if !path.exists() {
-            match state
-                .storage
-                .delete_chunks_by_path(project_id, &path_str)
-                .await
-            {
+            match storage.delete_chunks_by_path(project_id, &path_str).await {
                 Ok(deleted) => {
                     if deleted > 0 {
                         tracing::debug!(path = %path_str, deleted, "Removed chunks for deleted file");
@@ -250,11 +238,7 @@ pub async fn incremental_index(
                     tracing::warn!(path = %path_str, error = %e, "Failed to delete chunks");
                 }
             }
-            // Also delete symbols
-            let _ = state
-                .storage
-                .delete_symbols_by_path(project_id, &path_str)
-                .await;
+            let _ = storage.delete_symbols_by_path(project_id, &path_str).await;
             continue;
         }
 
@@ -268,11 +252,10 @@ pub async fn incremental_index(
 
         let new_hash = blake3::hash(content.as_bytes()).to_hex().to_string();
 
-        let existing_chunks = state
-            .storage
+        let existing_chunks: Vec<CodeChunk> = storage
             .get_chunks_by_path(project_id, &path_str)
             .await
-            .unwrap_or_default();
+            .unwrap_or_else(|_| vec![]);
 
         if let Some(first_chunk) = existing_chunks.first() {
             if first_chunk.content_hash == new_hash {
@@ -280,20 +263,13 @@ pub async fn incremental_index(
             }
         }
 
-        let _ = state
-            .storage
-            .delete_chunks_by_path(project_id, &path_str)
-            .await;
-        let _ = state
-            .storage
-            .delete_symbols_by_path(project_id, &path_str)
-            .await;
+        let _ = storage.delete_chunks_by_path(project_id, &path_str).await;
+        let _ = storage.delete_symbols_by_path(project_id, &path_str).await;
 
-        // 1. Chunks - async via queue (consistent with index_project)
         let chunks = super::chunker::chunk_file(&path, &content, project_id);
 
         let _permit = state.db_semaphore.acquire().await;
-        if let Ok(results) = state.storage.create_code_chunks_batch(chunks).await {
+        if let Ok(results) = storage.create_code_chunks_batch(chunks).await {
             for (id, chunk) in results {
                 let _ = state
                     .embedding_queue
@@ -307,21 +283,17 @@ pub async fn incremental_index(
             }
         }
 
-        // 2. Symbols
         let (symbols, references) = CodeParser::parse_file(&path, &content, project_id);
         if !symbols.is_empty() {
             let _permit = state.db_semaphore.acquire().await;
-            let created_ids = match state
-                .storage
-                .create_code_symbols_batch(symbols.clone())
-                .await
-            {
-                Ok(ids) => ids,
-                Err(e) => {
-                    tracing::warn!(path = %path_str, error = %e, "Failed to create symbols");
-                    vec![]
-                }
-            };
+            let created_ids: Vec<String> =
+                match storage.create_code_symbols_batch(symbols.clone()).await {
+                    Ok(ids) => ids,
+                    Err(e) => {
+                        tracing::warn!(path = %path_str, error = %e, "Failed to create symbols");
+                        vec![]
+                    }
+                };
 
             for (id, sym) in created_ids.iter().zip(symbols.iter()) {
                 if let Some(sig) = &sym.signature {
@@ -338,17 +310,11 @@ pub async fn incremental_index(
             }
         }
 
-        // Create relations using the proper helper with symbol index
         if !references.is_empty() {
             let mut symbol_index = SymbolIndex::new();
             symbol_index.add_batch(&symbols);
-            let _stats = create_symbol_relations(
-                state.storage.as_ref(),
-                project_id,
-                &references,
-                &symbol_index,
-            )
-            .await;
+            let _stats =
+                create_symbol_relations(storage, project_id, &references, &symbol_index).await;
         }
 
         updated += 1;
@@ -374,10 +340,6 @@ mod tests {
             fs::write(file_path, format!("fn test_{}() {{}}", i)).unwrap();
         }
 
-        // Must run with a real queue/worker setup or mock state
-        // For unit test, we can just use the ctx.state which has a dummy queue if we updated TestContext
-        // But TestContext::new() needs to be updated to initialize embedding_queue.
-
         let status = index_project(ctx.state.clone(), &project_dir)
             .await
             .unwrap();
@@ -385,9 +347,8 @@ mod tests {
         assert_eq!(status.total_files, 150);
         assert_eq!(status.total_chunks, 150);
 
-        let chunks = ctx
-            .state
-            .storage
+        let storage = ctx.state.storage().unwrap();
+        let chunks = storage
             .bm25_search_code("fn test", None, 200)
             .await
             .unwrap();

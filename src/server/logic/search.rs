@@ -15,12 +15,14 @@ use crate::types::{MemoryType, ScoredMemory};
 use super::{error_response, normalize_limit, success_json};
 
 pub async fn search(state: &Arc<AppState>, params: SearchParams) -> anyhow::Result<CallToolResult> {
+    crate::ensure_storage_ready!(state);
     crate::ensure_embedding_ready!(state);
 
+    let storage = state.storage().unwrap();
     let query_embedding = state.embedding.embed(&params.query).await?;
 
     let limit = normalize_limit(params.limit);
-    let results = match state.storage.vector_search(&query_embedding, limit).await {
+    let results = match storage.vector_search(&query_embedding, limit).await {
         Ok(r) => r,
         Err(e) => return Ok(error_response(e)),
     };
@@ -36,8 +38,11 @@ pub async fn search_text(
     state: &Arc<AppState>,
     params: SearchParams,
 ) -> anyhow::Result<CallToolResult> {
+    crate::ensure_storage_ready!(state);
+
+    let storage = state.storage().unwrap();
     let limit = normalize_limit(params.limit);
-    let results = match state.storage.bm25_search(&params.query, limit).await {
+    let results = match storage.bm25_search(&params.query, limit).await {
         Ok(r) => r,
         Err(e) => return Ok(error_response(e)),
     };
@@ -53,8 +58,10 @@ pub async fn recall(state: &Arc<AppState>, params: RecallParams) -> anyhow::Resu
     use petgraph::graph::{DiGraph, NodeIndex};
     use std::collections::HashMap;
 
+    crate::ensure_storage_ready!(state);
     crate::ensure_embedding_ready!(state);
 
+    let storage = state.storage().unwrap();
     let query_embedding = state.embedding.embed(&params.query).await?;
 
     let limit = normalize_limit(params.limit);
@@ -64,14 +71,12 @@ pub async fn recall(state: &Arc<AppState>, params: RecallParams) -> anyhow::Resu
     let bm25_weight = params.bm25_weight.unwrap_or(DEFAULT_BM25_WEIGHT);
     let ppr_weight = params.ppr_weight.unwrap_or(DEFAULT_PPR_WEIGHT);
 
-    let vector_results = state
-        .storage
+    let vector_results = storage
         .vector_search(&query_embedding, fetch_limit)
         .await
         .unwrap_or_default();
 
-    let bm25_results = state
-        .storage
+    let bm25_results = storage
         .bm25_search(&params.query, fetch_limit)
         .await
         .unwrap_or_default();
@@ -94,7 +99,7 @@ pub async fn recall(state: &Arc<AppState>, params: RecallParams) -> anyhow::Resu
         .collect();
 
     let ppr_tuples: Vec<(String, f32)> = if !all_ids.is_empty() {
-        match state.storage.get_subgraph(&all_ids).await {
+        match storage.get_subgraph(&all_ids).await {
             Ok((entities, relations)) if !entities.is_empty() => {
                 let mut graph: DiGraph<String, f32> = DiGraph::new();
                 let mut node_map: HashMap<String, NodeIndex> = HashMap::new();
@@ -214,20 +219,21 @@ mod tests {
     #[tokio::test]
     async fn test_search_logic() {
         let ctx = TestContext::new().await;
+        let storage = ctx
+            .state
+            .storage()
+            .expect("Storage should be ready in tests");
 
-        // Seed data
-        ctx.state
-            .storage
+        storage
             .create_memory(Memory {
                 content: "Rust is a systems programming language".to_string(),
-                embedding: Some(vec![0.1; 768]), // Mock embedding
+                embedding: Some(vec![0.1; 768]),
                 ..Memory::new("Rust is a systems programming language".to_string())
             })
             .await
             .unwrap();
 
-        ctx.state
-            .storage
+        storage
             .create_memory(Memory {
                 content: "Python is great for scripting".to_string(),
                 embedding: Some(vec![0.9; 768]),

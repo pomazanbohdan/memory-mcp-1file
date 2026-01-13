@@ -1,14 +1,23 @@
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use std::path::PathBuf;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
 
-use memory_mcp::config::{AppConfig, AppState};
+use memory_mcp::config::{AppConfig, AppState, STATUS_ERROR, STATUS_READY};
 use memory_mcp::embedding::{
     EmbeddingConfig, EmbeddingService, EmbeddingStore, EmbeddingWorker, ModelType,
 };
 use memory_mcp::server::MemoryMcpServer;
 use memory_mcp::storage::{StorageBackend, SurrealStorage};
+use tokio::sync::OnceCell;
+
+#[derive(Debug, Clone, Copy, ValueEnum, Default, PartialEq)]
+pub enum Transport {
+    #[default]
+    Stdio,
+    Http,
+}
 
 #[derive(Parser)]
 #[command(name = "memory-mcp")]
@@ -42,6 +51,15 @@ struct Cli {
 
     #[arg(long)]
     list_models: bool,
+
+    #[arg(long, env = "MCP_TRANSPORT", default_value = "stdio")]
+    transport: Transport,
+
+    #[arg(long, env = "MCP_PORT", default_value = "3000")]
+    port: u16,
+
+    #[arg(long, env = "MCP_HOST", default_value = "127.0.0.1")]
+    host: String,
 }
 
 fn default_data_dir() -> PathBuf {
@@ -68,17 +86,7 @@ async fn main() -> anyhow::Result<()> {
         .with_writer(std::io::stderr)
         .init();
 
-    let storage = Arc::new(SurrealStorage::new(&cli.data_dir).await?);
-
     let model: ModelType = cli.model.parse().map_err(|e: String| anyhow::anyhow!(e))?;
-
-    if let Err(e) = storage.check_dimension(model.dimensions()).await {
-        tracing::error!("{}", e);
-        std::process::exit(1);
-    }
-
-    // Initialize Embedding Store (L1/L2 Cache)
-    let embedding_store = Arc::new(EmbeddingStore::new(&cli.data_dir, model.repo_id())?);
 
     let embedding_config = EmbeddingConfig {
         model,
@@ -96,25 +104,51 @@ async fn main() -> anyhow::Result<()> {
 
     let state = Arc::new(AppState {
         config: AppConfig {
-            data_dir: cli.data_dir,
-            model: cli.model,
+            data_dir: cli.data_dir.clone(),
+            model: cli.model.clone(),
             cache_size: cli.cache_size,
             batch_size: cli.batch_size,
             timeout_ms: cli.timeout,
-            log_level: cli.log_level,
+            log_level: cli.log_level.clone(),
         },
-        storage: storage.clone(),
+        storage: Arc::new(OnceCell::const_new()),
         embedding: embedding.clone(),
-        embedding_store: embedding_store.clone(),
+        embedding_store: Arc::new(OnceCell::const_new()),
         embedding_queue: adaptive_queue,
         progress: memory_mcp::config::IndexProgressTracker::new(),
         db_semaphore: Arc::new(tokio::sync::Semaphore::new(10)),
+        init_status: Arc::new(std::sync::atomic::AtomicU8::new(
+            memory_mcp::config::STATUS_INITIALIZING,
+        )),
+        init_error: Arc::new(tokio::sync::RwLock::new(None)),
+    });
+
+    let init_state = state.clone();
+    let init_data_dir = cli.data_dir.clone();
+    let init_model = model;
+    tokio::spawn(async move {
+        match init_storage(&init_data_dir, init_model, &init_state).await {
+            Ok(()) => {
+                init_state
+                    .init_status
+                    .store(STATUS_READY, Ordering::Release);
+                tracing::info!("Storage initialization complete");
+            }
+            Err(e) => {
+                let err_msg = e.to_string();
+                tracing::error!("Storage initialization failed: {}", err_msg);
+                *init_state.init_error.write().await = Some(err_msg);
+                init_state
+                    .init_status
+                    .store(STATUS_ERROR, Ordering::Release);
+            }
+        }
     });
 
     let worker = EmbeddingWorker::new(
         queue_rx,
         embedding.get_engine(),
-        embedding_store.clone(),
+        state.embedding_store.clone(),
         state.clone(),
     );
     tokio::spawn(worker.run());
@@ -124,20 +158,51 @@ async fn main() -> anyhow::Result<()> {
 
     let server = MemoryMcpServer::new(state.clone());
 
-    // Auto-start codebase manager if /project exists
-    let transport = rmcp::transport::io::stdio();
+    match cli.transport {
+        Transport::Stdio => {
+            run_stdio(server, state.clone(), cli.reconnect_timeout).await?;
+        }
+        #[cfg(feature = "http")]
+        Transport::Http => {
+            run_http(state.clone(), &cli.host, cli.port).await?;
+        }
+        #[cfg(not(feature = "http"))]
+        Transport::Http => {
+            anyhow::bail!("HTTP transport not enabled. Rebuild with --features http");
+        }
+    }
 
+    tracing::info!("Initiating graceful shutdown...");
+
+    tracing::info!("Flushing database...");
+    if let Some(storage) = state.storage.get() {
+        if let Err(e) = storage.shutdown().await {
+            tracing::warn!("Database shutdown error: {}", e);
+        }
+    }
+
+    tracing::info!("Shutdown complete");
+    Ok(())
+}
+
+#[cfg(feature = "stdio")]
+async fn run_stdio(
+    server: MemoryMcpServer,
+    state: Arc<AppState>,
+    reconnect_timeout_sec: u64,
+) -> anyhow::Result<()> {
+    let transport = rmcp::transport::io::stdio();
     let service = rmcp::service::serve_server(server, transport).await?;
 
     tracing::info!(
-        reconnect_timeout_sec = cli.reconnect_timeout,
-        "Server started, waiting for signals..."
+        reconnect_timeout_sec = reconnect_timeout_sec,
+        "Server started (stdio), waiting for signals..."
     );
 
     #[cfg(unix)]
     let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
 
-    let reconnect_timeout = Duration::from_secs(cli.reconnect_timeout);
+    let reconnect_timeout = Duration::from_secs(reconnect_timeout_sec);
     let shutdown_reason: &str;
 
     tokio::select! {
@@ -149,7 +214,7 @@ async fn main() -> anyhow::Result<()> {
                 }
                 Ok(_) => {
                     tracing::info!(
-                        timeout_sec = cli.reconnect_timeout,
+                        timeout_sec = reconnect_timeout_sec,
                         "Connection closed, waiting for reconnect..."
                     );
 
@@ -189,13 +254,67 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
-    tracing::info!(reason = shutdown_reason, "Initiating graceful shutdown...");
+    tracing::info!(reason = shutdown_reason, "Stdio transport stopped");
+    let _ = state;
+    Ok(())
+}
 
-    tracing::info!("Flushing database...");
-    if let Err(e) = state.storage.shutdown().await {
-        tracing::warn!("Database shutdown error: {}", e);
+#[cfg(feature = "http")]
+async fn run_http(state: Arc<AppState>, host: &str, port: u16) -> anyhow::Result<()> {
+    use axum::Router;
+    use rmcp::transport::streamable_http_server::{
+        session::local::LocalSessionManager, StreamableHttpServerConfig, StreamableHttpService,
+    };
+
+    let config = StreamableHttpServerConfig::default();
+    let session_manager = Arc::new(LocalSessionManager::default());
+
+    let state_clone = state.clone();
+    let mcp_service = StreamableHttpService::new(
+        move || Ok(MemoryMcpServer::new(state_clone.clone())),
+        session_manager,
+        config,
+    );
+
+    let app = Router::new().nest_service("/mcp", mcp_service);
+
+    let addr = format!("{}:{}", host, port);
+    let listener = tokio::net::TcpListener::bind(&addr).await?;
+    tracing::info!("MCP HTTP server listening on http://{}/mcp", addr);
+
+    axum::serve(listener, app)
+        .with_graceful_shutdown(async {
+            tokio::signal::ctrl_c()
+                .await
+                .expect("Failed to listen for shutdown signal");
+            tracing::info!("Received shutdown signal");
+        })
+        .await?;
+
+    Ok(())
+}
+
+async fn init_storage(
+    data_dir: &PathBuf,
+    model: ModelType,
+    state: &AppState,
+) -> anyhow::Result<()> {
+    let storage = SurrealStorage::new(data_dir).await?;
+
+    if let Err(e) = storage.check_dimension(model.dimensions()).await {
+        anyhow::bail!("Dimension mismatch: {}", e);
     }
 
-    tracing::info!("Shutdown complete");
+    let embedding_store = EmbeddingStore::new(data_dir, model.repo_id())?;
+
+    state
+        .storage
+        .set(storage)
+        .map_err(|_| anyhow::anyhow!("Storage already initialized"))?;
+    state
+        .embedding_store
+        .set(embedding_store)
+        .map_err(|_| anyhow::anyhow!("EmbeddingStore already initialized"))?;
+
     Ok(())
 }

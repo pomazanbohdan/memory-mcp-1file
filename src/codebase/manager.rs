@@ -39,15 +39,18 @@ impl CodebaseManager {
         &self.project_id
     }
 
-    /// Start auto-indexing and file watching
     pub async fn start(&self) -> Result<()> {
         info!(project_id = %self.project_id, "Starting codebase manager");
 
-        let status = self
-            .state
-            .storage
-            .get_index_status(&self.project_id)
-            .await?;
+        let storage = match self.state.storage() {
+            Some(s) => s,
+            None => {
+                warn!("Storage not ready, deferring codebase manager start");
+                return Ok(());
+            }
+        };
+
+        let status = storage.get_index_status(&self.project_id).await?;
 
         match status {
             None => {

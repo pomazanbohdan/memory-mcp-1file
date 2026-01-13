@@ -23,22 +23,22 @@ pub struct EmbeddingRequest {
 pub struct EmbeddingWorker {
     queue: mpsc::Receiver<EmbeddingRequest>,
     engine: Arc<tokio::sync::RwLock<Option<EmbeddingEngine>>>,
-    store: Arc<EmbeddingStore>,
-    storage: Arc<crate::storage::SurrealStorage>,
+    store: Arc<tokio::sync::OnceCell<EmbeddingStore>>,
+    state: Arc<crate::config::AppState>,
 }
 
 impl EmbeddingWorker {
     pub fn new(
         queue: mpsc::Receiver<EmbeddingRequest>,
         engine: Arc<tokio::sync::RwLock<Option<EmbeddingEngine>>>,
-        store: Arc<EmbeddingStore>,
+        store: Arc<tokio::sync::OnceCell<EmbeddingStore>>,
         state: Arc<crate::config::AppState>,
     ) -> Self {
         Self {
             queue,
             engine,
             store,
-            storage: state.storage.clone(),
+            state,
         }
     }
 
@@ -114,7 +114,13 @@ impl EmbeddingWorker {
         for (i, req) in batch.iter().enumerate() {
             let hash = blake3::hash(req.text.as_bytes()).to_hex().to_string();
 
-            if let Some(vec) = self.store.get(&hash).await {
+            let cached = if let Some(store) = self.store.get() {
+                store.get(&hash).await
+            } else {
+                None
+            };
+
+            if let Some(vec) = cached {
                 final_embeddings.push(Some(vec));
             } else {
                 final_embeddings.push(None);
@@ -131,7 +137,9 @@ impl EmbeddingWorker {
                         let req = &batch[original_idx];
                         let hash = blake3::hash(req.text.as_bytes()).to_hex().to_string();
 
-                        let _ = self.store.put(hash, vec.clone()).await;
+                        if let Some(store) = self.store.get() {
+                            let _ = store.put(hash, vec.clone()).await;
+                        }
                         final_embeddings[original_idx] = Some(vec);
                     }
                 }
@@ -183,22 +191,21 @@ impl EmbeddingWorker {
         use crate::storage::StorageBackend;
 
         if !symbol_updates.is_empty() {
-            if let Err(e) = self
-                .storage
-                .batch_update_symbol_embeddings(&symbol_updates)
-                .await
-            {
-                tracing::warn!(count = symbol_updates.len(), error = %e, "Batch symbol embedding update failed");
+            if let Some(storage) = self.state.storage() {
+                if let Err(e) = storage
+                    .batch_update_symbol_embeddings(&symbol_updates)
+                    .await
+                {
+                    tracing::warn!(count = symbol_updates.len(), error = %e, "Batch symbol embedding update failed");
+                }
             }
         }
 
         if !chunk_updates.is_empty() {
-            if let Err(e) = self
-                .storage
-                .batch_update_chunk_embeddings(&chunk_updates)
-                .await
-            {
-                tracing::warn!(count = chunk_updates.len(), error = %e, "Batch chunk embedding update failed");
+            if let Some(storage) = self.state.storage() {
+                if let Err(e) = storage.batch_update_chunk_embeddings(&chunk_updates).await {
+                    tracing::warn!(count = chunk_updates.len(), error = %e, "Batch chunk embedding update failed");
+                }
             }
         }
 
@@ -218,8 +225,8 @@ mod tests {
     #[tokio::test]
     async fn test_worker_initialization() {
         let dir = tempdir().unwrap();
-        let storage = Arc::new(SurrealStorage::new(dir.path()).await.unwrap());
-        let store = Arc::new(EmbeddingStore::new(dir.path(), "mock").unwrap());
+        let storage = SurrealStorage::new(dir.path()).await.unwrap();
+        let store = EmbeddingStore::new(dir.path(), "mock").unwrap();
 
         let config = EmbeddingConfig {
             model: ModelType::Mock,
@@ -233,18 +240,28 @@ mod tests {
         let metrics = std::sync::Arc::new(EmbeddingMetrics::new());
         let adaptive_queue = AdaptiveEmbeddingQueue::with_defaults(tx, metrics);
 
+        let storage_cell = Arc::new(tokio::sync::OnceCell::const_new());
+        storage_cell.set(storage).ok();
+
+        let store_cell = Arc::new(tokio::sync::OnceCell::const_new());
+        store_cell.set(store).ok();
+
         let _worker = EmbeddingWorker::new(
             rx,
             service.get_engine(),
-            store.clone(),
+            store_cell.clone(),
             Arc::new(crate::config::AppState {
                 config: crate::config::AppConfig::default(),
-                storage,
+                storage: storage_cell,
                 embedding: service,
-                embedding_store: store,
+                embedding_store: store_cell,
                 embedding_queue: adaptive_queue,
                 progress: crate::config::IndexProgressTracker::new(),
                 db_semaphore: Arc::new(tokio::sync::Semaphore::new(10)),
+                init_status: Arc::new(std::sync::atomic::AtomicU8::new(
+                    crate::config::STATUS_READY,
+                )),
+                init_error: Arc::new(tokio::sync::RwLock::new(None)),
             }),
         );
     }

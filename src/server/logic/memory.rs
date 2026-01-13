@@ -19,8 +19,10 @@ pub async fn store_memory(
     state: &Arc<AppState>,
     params: StoreMemoryParams,
 ) -> anyhow::Result<CallToolResult> {
+    crate::ensure_storage_ready!(state);
     crate::ensure_embedding_ready!(state);
 
+    let storage = state.storage().unwrap();
     let embedding = state.embedding.embed(&params.content).await?;
 
     let mem_type: MemoryType = params
@@ -42,7 +44,7 @@ pub async fn store_memory(
         ..Default::default()
     };
 
-    match state.storage.create_memory(memory).await {
+    match storage.create_memory(memory).await {
         Ok(id) => Ok(success_json(json!({ "id": id }))),
         Err(e) => Ok(error_response(e)),
     }
@@ -52,7 +54,10 @@ pub async fn get_memory(
     state: &Arc<AppState>,
     params: GetMemoryParams,
 ) -> anyhow::Result<CallToolResult> {
-    match state.storage.get_memory(&params.id).await {
+    crate::ensure_storage_ready!(state);
+
+    let storage = state.storage().unwrap();
+    match storage.get_memory(&params.id).await {
         Ok(Some(mut memory)) => {
             strip_embedding(&mut memory);
             Ok(success_json(
@@ -68,8 +73,11 @@ pub async fn update_memory(
     state: &Arc<AppState>,
     params: UpdateMemoryParams,
 ) -> anyhow::Result<CallToolResult> {
+    crate::ensure_storage_ready!(state);
+
+    let storage = state.storage().unwrap();
     let (embedding, content_hash, embedding_state) = if let Some(ref new_content) = params.content {
-        let old_memory = state.storage.get_memory(&params.id).await?;
+        let old_memory = storage.get_memory(&params.id).await?;
         let old_hash = old_memory.as_ref().and_then(|m| m.content_hash.as_deref());
 
         if ContentHasher::needs_reembed(old_hash, new_content) {
@@ -92,7 +100,7 @@ pub async fn update_memory(
         embedding_state,
     };
 
-    match state.storage.update_memory(&params.id, update).await {
+    match storage.update_memory(&params.id, update).await {
         Ok(mut memory) => {
             strip_embedding(&mut memory);
             Ok(success_json(
@@ -107,7 +115,10 @@ pub async fn delete_memory(
     state: &Arc<AppState>,
     params: DeleteMemoryParams,
 ) -> anyhow::Result<CallToolResult> {
-    match state.storage.delete_memory(&params.id).await {
+    crate::ensure_storage_ready!(state);
+
+    let storage = state.storage().unwrap();
+    match storage.delete_memory(&params.id).await {
         Ok(deleted) => Ok(success_json(json!({ "deleted": deleted }))),
         Err(e) => Ok(error_response(e)),
     }
@@ -117,16 +128,19 @@ pub async fn list_memories(
     state: &Arc<AppState>,
     params: ListMemoriesParams,
 ) -> anyhow::Result<CallToolResult> {
+    crate::ensure_storage_ready!(state);
+
+    let storage = state.storage().unwrap();
     let limit = normalize_limit(params.limit);
     let offset = params.offset.unwrap_or(0);
 
-    let mut memories = match state.storage.list_memories(limit, offset).await {
+    let mut memories = match storage.list_memories(limit, offset).await {
         Ok(m) => m,
         Err(e) => return Ok(error_response(e)),
     };
 
     strip_embeddings(&mut memories);
-    let total = state.storage.count_memories().await.unwrap_or(0);
+    let total = storage.count_memories().await.unwrap_or(0);
 
     Ok(success_json(json!({
         "memories": memories,
@@ -140,13 +154,12 @@ pub async fn get_valid(
     state: &Arc<AppState>,
     params: GetValidParams,
 ) -> anyhow::Result<CallToolResult> {
+    crate::ensure_storage_ready!(state);
+
+    let storage = state.storage().unwrap();
     let limit = normalize_limit(params.limit);
 
-    match state
-        .storage
-        .get_valid(params.user_id.as_deref(), limit)
-        .await
-    {
+    match storage.get_valid(params.user_id.as_deref(), limit).await {
         Ok(mut memories) => {
             strip_embeddings(&mut memories);
             Ok(success_json(json!({
@@ -162,6 +175,9 @@ pub async fn get_valid_at(
     state: &Arc<AppState>,
     params: GetValidAtParams,
 ) -> anyhow::Result<CallToolResult> {
+    crate::ensure_storage_ready!(state);
+
+    let storage = state.storage().unwrap();
     let limit = normalize_limit(params.limit);
 
     let chrono_ts: chrono::DateTime<chrono::Utc> = match params.timestamp.parse() {
@@ -170,8 +186,7 @@ pub async fn get_valid_at(
     };
     let ts = surrealdb::sql::Datetime::from(chrono_ts);
 
-    match state
-        .storage
+    match storage
         .get_valid_at(ts, params.user_id.as_deref(), limit)
         .await
     {
@@ -191,8 +206,10 @@ pub async fn invalidate(
     state: &Arc<AppState>,
     params: InvalidateParams,
 ) -> anyhow::Result<CallToolResult> {
-    match state
-        .storage
+    crate::ensure_storage_ready!(state);
+
+    let storage = state.storage().unwrap();
+    match storage
         .invalidate(
             &params.id,
             params.reason.as_deref(),
@@ -245,5 +262,40 @@ mod tests {
         let text = val["content"][0]["text"].as_str().unwrap();
         let list_json: serde_json::Value = serde_json::from_str(text).unwrap();
         assert_eq!(list_json["memories"].as_array().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_ensure_storage_ready_when_ready() {
+        let ctx = TestContext::new().await;
+
+        let params = ListMemoriesParams {
+            limit: Some(10),
+            offset: None,
+        };
+        let result = list_memories(&ctx.state, params).await.unwrap();
+        let val = serde_json::to_value(&result).unwrap();
+        let text = val["content"][0]["text"].as_str().unwrap();
+        let json: serde_json::Value = serde_json::from_str(text).unwrap();
+
+        assert!(json.get("memories").is_some());
+        assert!(json.get("status").is_none() || json["status"] != "initializing");
+    }
+
+    #[tokio::test]
+    async fn test_store_memory_requires_storage_ready() {
+        let ctx = TestContext::new().await;
+
+        let params = StoreMemoryParams {
+            content: "Test lazy init".to_string(),
+            memory_type: None,
+            user_id: None,
+            metadata: None,
+        };
+        let result = store_memory(&ctx.state, params).await.unwrap();
+        let val = serde_json::to_value(&result).unwrap();
+        let text = val["content"][0]["text"].as_str().unwrap();
+        let json: serde_json::Value = serde_json::from_str(text).unwrap();
+
+        assert!(json.get("id").is_some());
     }
 }

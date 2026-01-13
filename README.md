@@ -237,6 +237,56 @@ Environment variables or CLI args:
 | `--data-dir` | `DATA_DIR` | `./data` | DB location |
 | `--model` | `EMBEDDING_MODEL` | `e5_multi` | Embedding model (`e5_small`, `e5_multi`, `nomic`, `bge_m3`) |
 | `--log-level` | `LOG_LEVEL` | `info` | Verbosity |
+| `--transport` | `MCP_TRANSPORT` | `stdio` | Transport type: `stdio` or `http` |
+| `--port` | `MCP_PORT` | `3000` | HTTP server port (only for `http` transport) |
+| `--host` | `MCP_HOST` | `127.0.0.1` | HTTP server host binding (only for `http` transport) |
+
+### 🚀 Transport Modes
+
+The server supports two transport modes:
+
+#### Stdio (Default)
+Standard input/output transport for local MCP clients. This is the default and works with most MCP clients.
+
+```bash
+# All equivalent:
+memory-mcp --data-dir /data
+memory-mcp --transport stdio --data-dir /data
+```
+
+#### Streamable HTTP
+HTTP-based transport following MCP 2025-03-26 specification. Use this if you experience connection issues with stdio, or for remote/cloud deployments.
+
+```bash
+# CLI
+memory-mcp --transport http --port 3000 --data-dir /data
+
+# Environment variables
+MCP_TRANSPORT=http MCP_PORT=8080 memory-mcp --data-dir /data
+
+# Docker with HTTP transport
+docker run --rm -p 3000:3000 \
+  -e MCP_TRANSPORT=http \
+  -v mcp-data:/data \
+  ghcr.io/pomazanbohdan/memory-mcp-1file:latest
+```
+
+**HTTP Client Configuration:**
+```json
+{
+  "mcpServers": {
+    "memory": {
+      "type": "streamable-http",
+      "url": "http://localhost:3000/mcp"
+    }
+  }
+}
+```
+
+> **When to use HTTP transport:**
+> - OpenCode or other clients show "connection closed" errors with stdio
+> - You need to run the server on a remote machine
+> - You want to inspect MCP traffic for debugging
 
 ### 🧠 Available Models
 

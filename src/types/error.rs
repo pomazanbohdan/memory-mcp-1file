@@ -5,6 +5,9 @@ pub enum AppError {
     #[error("Database error: {0}")]
     Database(String),
 
+    #[error("Storage error: {0}")]
+    Storage(String),
+
     #[error("Embedding error: {0}")]
     Embedding(String),
 

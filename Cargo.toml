@@ -22,11 +22,13 @@ hf-hub = { version = "0.4", default-features = false, features = ["ureq"] }
 # MCP Protocol
 rmcp = { version = "0.12.0", features = [
     "server",
-    "client",
-    "transport-io",
     "macros",
 ] }
 schemars = "1"
+
+# HTTP Transport (optional)
+axum = { version = "0.8", optional = true }
+tower = { version = "0.5", optional = true }
 
 # Graph
 petgraph = "0.8.3"
@@ -76,6 +78,11 @@ bincode = { version = "=2.0.1", features = ["serde"] }
 [dev-dependencies]
 tempfile = "3"
 filetime = "0.2"
+
+[features]
+default = ["stdio", "http"]
+stdio = ["rmcp/transport-io"]
+http = ["rmcp/transport-streamable-http-server", "dep:axum", "dep:tower"]
 
 
 [profile.release]

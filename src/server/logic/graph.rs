@@ -18,6 +18,9 @@ pub async fn create_entity(
     state: &Arc<AppState>,
     params: CreateEntityParams,
 ) -> anyhow::Result<CallToolResult> {
+    crate::ensure_storage_ready!(state);
+
+    let storage = state.storage().unwrap();
     let embed_text = format!(
         "{}: {}",
         params.name,
@@ -36,7 +39,7 @@ pub async fn create_entity(
         ..Default::default()
     };
 
-    match state.storage.create_entity(entity).await {
+    match storage.create_entity(entity).await {
         Ok(id) => Ok(success_json(json!({ "id": id }))),
         Err(e) => Ok(error_response(e)),
     }
@@ -46,7 +49,9 @@ pub async fn create_relation(
     state: &Arc<AppState>,
     params: CreateRelationParams,
 ) -> anyhow::Result<CallToolResult> {
-    // Validate entity IDs to prevent SQL injection and Thing::from panics
+    crate::ensure_storage_ready!(state);
+
+    let storage = state.storage().unwrap();
     let from_id = match ThingId::new("entities", &params.from_entity) {
         Ok(id) => id,
         Err(e) => {
@@ -74,7 +79,7 @@ pub async fn create_relation(
         valid_until: None,
     };
 
-    match state.storage.create_relation(relation).await {
+    match storage.create_relation(relation).await {
         Ok(id) => Ok(success_json(json!({ "id": id }))),
         Err(e) => Ok(error_response(e)),
     }
@@ -84,6 +89,9 @@ pub async fn get_related(
     state: &Arc<AppState>,
     params: GetRelatedParams,
 ) -> anyhow::Result<CallToolResult> {
+    crate::ensure_storage_ready!(state);
+
+    let storage = state.storage().unwrap();
     let depth = params.depth.unwrap_or(1).min(3);
     let direction: Direction = params
         .direction
@@ -91,8 +99,7 @@ pub async fn get_related(
         .and_then(|s| s.parse().ok())
         .unwrap_or_default();
 
-    match state
-        .storage
+    match storage
         .get_related(&params.entity_id, depth, direction)
         .await
     {
@@ -116,12 +123,15 @@ pub async fn detect_communities(
     use petgraph::graph::DiGraph;
     use std::collections::HashMap;
 
-    let entities = match state.storage.get_all_entities().await {
+    crate::ensure_storage_ready!(state);
+
+    let storage = state.storage().unwrap();
+    let entities = match storage.get_all_entities().await {
         Ok(e) => e,
         Err(e) => return Ok(error_response(e)),
     };
 
-    let relations = match state.storage.get_all_relations().await {
+    let relations = match storage.get_all_relations().await {
         Ok(r) => r,
         Err(e) => return Ok(error_response(e)),
     };

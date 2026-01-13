@@ -17,6 +17,9 @@ pub async fn index_project(
     state: &Arc<AppState>,
     params: IndexProjectParams,
 ) -> anyhow::Result<CallToolResult> {
+    crate::ensure_storage_ready!(state);
+
+    let storage = state.storage().unwrap();
     let path = std::path::Path::new(&params.path);
 
     if !path.exists() {
@@ -32,11 +35,9 @@ pub async fn index_project(
         .unwrap_or("unknown")
         .to_string();
 
-    // Check current status
-    if let Ok(Some(status)) = state.storage.get_index_status(&project_id).await {
+    if let Ok(Some(status)) = storage.get_index_status(&project_id).await {
         match status.status {
             crate::types::IndexState::Indexing => {
-                // Already indexing - return current progress
                 return Ok(success_json(json!({
                     "project_id": project_id,
                     "status": "indexing",
@@ -86,11 +87,13 @@ pub async fn search_code(
     state: &Arc<AppState>,
     params: SearchCodeParams,
 ) -> anyhow::Result<CallToolResult> {
+    crate::ensure_storage_ready!(state);
     crate::ensure_embedding_ready!(state);
 
-    // Check if project is being indexed
+    let storage = state.storage().unwrap();
+
     if let Some(ref project_id) = params.project_id {
-        if let Ok(Some(status)) = state.storage.get_index_status(project_id).await {
+        if let Ok(Some(status)) = storage.get_index_status(project_id).await {
             if status.status == crate::types::IndexState::Indexing {
                 return Ok(success_json(json!({
                     "status": "indexing",
@@ -106,8 +109,7 @@ pub async fn search_code(
     let query_embedding = state.embedding.embed(&params.query).await?;
 
     let limit = normalize_limit(params.limit);
-    let results = state
-        .storage
+    let results = storage
         .vector_search_code(&query_embedding, params.project_id.as_deref(), limit)
         .await
         .unwrap_or_default();
@@ -120,8 +122,7 @@ pub async fn search_code(
         })));
     }
 
-    match state
-        .storage
+    match storage
         .bm25_search_code(&params.query, params.project_id.as_deref(), limit)
         .await
     {
@@ -139,7 +140,10 @@ pub async fn get_index_status(
     state: &Arc<AppState>,
     params: GetIndexStatusParams,
 ) -> anyhow::Result<CallToolResult> {
-    match state.storage.get_index_status(&params.project_id).await {
+    crate::ensure_storage_ready!(state);
+
+    let storage = state.storage().unwrap();
+    match storage.get_index_status(&params.project_id).await {
         Ok(Some(mut status)) => {
             if status.status == crate::types::IndexState::Indexing {
                 if let Some(monitor) = state.progress.get(&params.project_id).await {
@@ -159,23 +163,13 @@ pub async fn get_index_status(
                 }
             }
 
-            let total_symbols = state
-                .storage
-                .count_symbols(&params.project_id)
-                .await
-                .unwrap_or(0);
-            let total_chunks = state
-                .storage
-                .count_chunks(&params.project_id)
-                .await
-                .unwrap_or(0);
-            let embedded_symbols = state
-                .storage
+            let total_symbols = storage.count_symbols(&params.project_id).await.unwrap_or(0);
+            let total_chunks = storage.count_chunks(&params.project_id).await.unwrap_or(0);
+            let embedded_symbols = storage
                 .count_embedded_symbols(&params.project_id)
                 .await
                 .unwrap_or(0);
-            let embedded_chunks = state
-                .storage
+            let embedded_chunks = storage
                 .count_embedded_chunks(&params.project_id)
                 .await
                 .unwrap_or(0);
@@ -243,26 +237,19 @@ pub async fn list_projects(
     state: &Arc<AppState>,
     _params: ListProjectsParams,
 ) -> anyhow::Result<CallToolResult> {
-    match state.storage.list_projects().await {
+    crate::ensure_storage_ready!(state);
+
+    let storage = state.storage().unwrap();
+    match storage.list_projects().await {
         Ok(projects) => {
             let mut enriched = Vec::with_capacity(projects.len());
 
             for project_id in &projects {
-                let status = state
-                    .storage
-                    .get_index_status(project_id)
-                    .await
-                    .ok()
-                    .flatten();
-                let chunks = state.storage.count_chunks(project_id).await.unwrap_or(0);
-                let symbols = state.storage.count_symbols(project_id).await.unwrap_or(0);
-                let embedded_chunks = state
-                    .storage
-                    .count_embedded_chunks(project_id)
-                    .await
-                    .unwrap_or(0);
-                let embedded_symbols = state
-                    .storage
+                let status = storage.get_index_status(project_id).await.ok().flatten();
+                let chunks = storage.count_chunks(project_id).await.unwrap_or(0);
+                let symbols = storage.count_symbols(project_id).await.unwrap_or(0);
+                let embedded_chunks = storage.count_embedded_chunks(project_id).await.unwrap_or(0);
+                let embedded_symbols = storage
                     .count_embedded_symbols(project_id)
                     .await
                     .unwrap_or(0);
@@ -295,18 +282,14 @@ pub async fn delete_project(
     state: &Arc<AppState>,
     params: DeleteProjectParams,
 ) -> anyhow::Result<CallToolResult> {
-    let _ = state
-        .storage
-        .delete_project_symbols(&params.project_id)
-        .await;
+    crate::ensure_storage_ready!(state);
 
-    let _ = state.storage.delete_index_status(&params.project_id).await;
+    let storage = state.storage().unwrap();
+    let _ = storage.delete_project_symbols(&params.project_id).await;
 
-    match state
-        .storage
-        .delete_project_chunks(&params.project_id)
-        .await
-    {
+    let _ = storage.delete_index_status(&params.project_id).await;
+
+    match storage.delete_project_chunks(&params.project_id).await {
         Ok(deleted) => Ok(success_json(json!({
             "deleted_chunks": deleted,
             "project_id": params.project_id
@@ -319,11 +302,13 @@ pub async fn search_symbols(
     state: &Arc<AppState>,
     params: SearchSymbolsParams,
 ) -> anyhow::Result<CallToolResult> {
+    crate::ensure_storage_ready!(state);
+
+    let storage = state.storage().unwrap();
     let limit = params.limit.unwrap_or(20).clamp(1, 100);
     let offset = params.offset.unwrap_or(0);
 
-    match state
-        .storage
+    match storage
         .search_symbols(
             &params.query,
             params.project_id.as_deref(),
@@ -363,7 +348,10 @@ pub async fn get_callers(
     state: &Arc<AppState>,
     params: GetCallersParams,
 ) -> anyhow::Result<CallToolResult> {
-    match state.storage.get_symbol_callers(&params.symbol_id).await {
+    crate::ensure_storage_ready!(state);
+
+    let storage = state.storage().unwrap();
+    match storage.get_symbol_callers(&params.symbol_id).await {
         Ok(mut callers) => {
             strip_symbol_embeddings(&mut callers);
             Ok(success_json(json!({
@@ -380,7 +368,10 @@ pub async fn get_callees(
     state: &Arc<AppState>,
     params: GetCalleesParams,
 ) -> anyhow::Result<CallToolResult> {
-    match state.storage.get_symbol_callees(&params.symbol_id).await {
+    crate::ensure_storage_ready!(state);
+
+    let storage = state.storage().unwrap();
+    match storage.get_symbol_callees(&params.symbol_id).await {
         Ok(mut callees) => {
             strip_symbol_embeddings(&mut callees);
             Ok(success_json(json!({
@@ -399,6 +390,9 @@ pub async fn get_related_symbols(
 ) -> anyhow::Result<CallToolResult> {
     use crate::types::Direction;
 
+    crate::ensure_storage_ready!(state);
+
+    let storage = state.storage().unwrap();
     let depth = params.depth.unwrap_or(1).min(3);
     let direction: Direction = params
         .direction
@@ -406,8 +400,7 @@ pub async fn get_related_symbols(
         .and_then(|s| s.parse().ok())
         .unwrap_or_default();
 
-    match state
-        .storage
+    match storage
         .get_related_symbols(&params.symbol_id, depth, direction)
         .await
     {
@@ -428,7 +421,10 @@ pub async fn get_project_stats(
     state: &Arc<AppState>,
     params: GetProjectStatsParams,
 ) -> anyhow::Result<CallToolResult> {
-    let status = state.storage.get_index_status(&params.project_id).await?;
+    crate::ensure_storage_ready!(state);
+
+    let storage = state.storage().unwrap();
+    let status = storage.get_index_status(&params.project_id).await?;
 
     if status.is_none() {
         return Ok(error_response(format!(
@@ -439,23 +435,13 @@ pub async fn get_project_stats(
 
     let status = status.unwrap();
 
-    let total_symbols = state
-        .storage
-        .count_symbols(&params.project_id)
-        .await
-        .unwrap_or(0);
-    let total_chunks = state
-        .storage
-        .count_chunks(&params.project_id)
-        .await
-        .unwrap_or(0);
-    let embedded_symbols = state
-        .storage
+    let total_symbols = storage.count_symbols(&params.project_id).await.unwrap_or(0);
+    let total_chunks = storage.count_chunks(&params.project_id).await.unwrap_or(0);
+    let embedded_symbols = storage
         .count_embedded_symbols(&params.project_id)
         .await
         .unwrap_or(0);
-    let embedded_chunks = state
-        .storage
+    let embedded_chunks = storage
         .count_embedded_chunks(&params.project_id)
         .await
         .unwrap_or(0);

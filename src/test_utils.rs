@@ -1,7 +1,8 @@
 use std::sync::Arc;
 use tempfile::TempDir;
+use tokio::sync::OnceCell;
 
-use crate::config::{AppConfig, AppState};
+use crate::config::{AppConfig, AppState, STATUS_READY};
 use crate::embedding::{
     AdaptiveEmbeddingQueue, EmbeddingConfig, EmbeddingMetrics, EmbeddingService, EmbeddingStore,
     ModelType,
@@ -10,7 +11,7 @@ use crate::storage::SurrealStorage;
 
 pub struct TestContext {
     pub state: Arc<AppState>,
-    pub _temp_dir: TempDir, // Kept to ensure directory lives as long as context
+    pub _temp_dir: TempDir,
 }
 
 impl TestContext {
@@ -18,14 +19,10 @@ impl TestContext {
         let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
         let db_path = temp_dir.path();
 
-        // Initialize Storage
-        let storage = Arc::new(
-            SurrealStorage::new(db_path)
-                .await
-                .expect("Failed to init storage"),
-        );
+        let storage = SurrealStorage::new(db_path)
+            .await
+            .expect("Failed to init storage");
 
-        // Initialize Mock Embedding
         let embedding_config = EmbeddingConfig {
             model: ModelType::Mock,
             cache_size: 100,
@@ -45,7 +42,7 @@ impl TestContext {
         }
 
         let embedding_store =
-            Arc::new(EmbeddingStore::new(db_path, "mock").expect("Failed to init embedding store"));
+            EmbeddingStore::new(db_path, "mock").expect("Failed to init embedding store");
         let metrics = Arc::new(EmbeddingMetrics::new());
         let (queue_tx, _queue_rx) = tokio::sync::mpsc::channel(1000);
         let adaptive_queue = AdaptiveEmbeddingQueue::with_defaults(queue_tx, metrics);
@@ -59,14 +56,22 @@ impl TestContext {
             log_level: "debug".to_string(),
         };
 
+        let storage_cell = Arc::new(OnceCell::const_new());
+        storage_cell.set(storage).ok();
+
+        let embedding_store_cell = Arc::new(OnceCell::const_new());
+        embedding_store_cell.set(embedding_store).ok();
+
         let state = Arc::new(AppState {
             config,
-            storage,
+            storage: storage_cell,
             embedding,
-            embedding_store,
+            embedding_store: embedding_store_cell,
             embedding_queue: adaptive_queue,
             progress: crate::config::IndexProgressTracker::new(),
             db_semaphore: Arc::new(tokio::sync::Semaphore::new(10)),
+            init_status: Arc::new(std::sync::atomic::AtomicU8::new(STATUS_READY)),
+            init_error: Arc::new(tokio::sync::RwLock::new(None)),
         });
 
         Self {

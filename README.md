@@ -439,3 +439,8 @@ Based on analysis of advanced memory systems like [Hindsight](https://hindsight.
 ## License
 
 MIT
+
+## Hosted deployment
+
+A hosted deployment is available on [Fronteir AI](https://fronteir.ai/mcp/pomazanbohdan-memory-mcp-1file).
+

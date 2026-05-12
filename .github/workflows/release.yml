@@ -221,10 +221,14 @@ jobs:
       - name: Sync version from tag
         run: |
           VERSION=${GITHUB_REF#refs/tags/v}
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.-]+)?$ ]]; then
+            echo "Invalid semver tag: $VERSION"
+            exit 1
+          fi
           cd npm
-          node -e "
+          VERSION="$VERSION" node -e "
             const pkg = require('./package.json');
-            pkg.version = '$VERSION';
+            pkg.version = process.env.VERSION;
             require('fs').writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
           "
           echo "Publishing memory-mcp@${VERSION} to npm"

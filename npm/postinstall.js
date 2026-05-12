@@ -8,12 +8,11 @@
  */
 
 const https = require("https");
-const http = require("http");
 const fs = require("fs");
 const path = require("path");
 const { execSync } = require("child_process");
 const os = require("os");
-const zlib = require("zlib");
+const crypto = require("crypto");
 
 const REPO = "pomazanbohdan/memory-mcp-1file";
 const BINARY_NAME = "memory-mcp";
@@ -50,21 +49,36 @@ function getVersion() {
     return pkg.version;
 }
 
-function getDownloadUrl(version, target) {
+function getAssetName(version, target) {
     const ext = target.includes("windows") ? ".zip" : ".tar.gz";
-    return `https://github.com/${REPO}/releases/download/v${version}/${BINARY_NAME}-${version}-${target}${ext}`;
+    return `${BINARY_NAME}-${version}-${target}${ext}`;
+}
+
+function getDownloadUrl(version, target) {
+    return `https://github.com/${REPO}/releases/download/v${version}/${getAssetName(version, target)}`;
+}
+
+function getChecksumUrl(version, target) {
+    return `${getDownloadUrl(version, target)}.sha256`;
 }
 
 /**
  * Follow redirects (GitHub releases use 302 → S3).
  */
-function download(url) {
+function download(url, redirectCount = 0) {
     return new Promise((resolve, reject) => {
-        const client = url.startsWith("https") ? https : http;
+        if (redirectCount > 5) {
+            return reject(new Error(`Too many redirects for ${url}`));
+        }
+        if (!url.startsWith("https://")) {
+            return reject(new Error(`Refusing non-HTTPS download URL: ${url}`));
+        }
+        const client = https;
         client
             .get(url, { headers: { "User-Agent": "memory-mcp-npm" } }, (res) => {
                 if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-                    return download(res.headers.location).then(resolve, reject);
+                    const redirect = new URL(res.headers.location, url).toString();
+                    return download(redirect, redirectCount + 1).then(resolve, reject);
                 }
                 if (res.statusCode !== 200) {
                     return reject(
@@ -78,6 +92,19 @@ function download(url) {
             })
             .on("error", reject);
     });
+}
+
+
+function sha256Hex(buffer) {
+    return crypto.createHash("sha256").update(buffer).digest("hex");
+}
+
+function parseChecksumFile(text) {
+    const token = text.trim().split(/\s+/)[0];
+    if (!/^[a-fA-F0-9]{64}$/.test(token)) {
+        throw new Error("Invalid SHA256 checksum format");
+    }
+    return token.toLowerCase();
 }
 
 /**
@@ -136,7 +163,16 @@ async function main() {
     console.log(`  URL: ${url}`);
 
     try {
-        const buffer = await download(url);
+        const [buffer, checksumBuffer] = await Promise.all([
+            download(url),
+            download(getChecksumUrl(version, target)),
+        ]);
+
+        const expected = parseChecksumFile(checksumBuffer.toString("utf8"));
+        const actual = sha256Hex(buffer);
+        if (actual !== expected) {
+            throw new Error(`Checksum mismatch for downloaded binary (expected ${expected}, got ${actual})`);
+        }
 
         if (isWindows) {
             await extractZip(buffer, binDir);

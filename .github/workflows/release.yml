@@ -64,13 +64,16 @@ jobs:
           
           echo "Packaging $BIN_PATH to $ASSET_NAME"
           tar -czf "$ASSET_NAME" -C $(dirname "$BIN_PATH") "$BINARY_NAME"
-          
+          sha256sum "$ASSET_NAME" > "$ASSET_NAME.sha256"
+
           echo "ASSET_NAME=$ASSET_NAME" >> $GITHUB_ENV
 
       - name: Upload Release Asset
         uses: softprops/action-gh-release@v1
         with:
-          files: ${{ env.ASSET_NAME }}
+          files: |
+            ${{ env.ASSET_NAME }}
+            ${{ env.ASSET_NAME }}.sha256
 
   docker-release:
     needs: build-musl
@@ -194,16 +197,20 @@ jobs:
           
           if [ "${{ matrix.archive_ext }}" = ".zip" ]; then
             7z a "$ASSET_NAME" "$BIN_PATH"
+            sha256sum "$ASSET_NAME" > "$ASSET_NAME.sha256"
           else
             tar -czf "$ASSET_NAME" -C $(dirname "$BIN_PATH") "$BINARY_NAME"
+            shasum -a 256 "$ASSET_NAME" | awk '{print $1 "  " $2}' > "$ASSET_NAME.sha256"
           fi
-          
+
           echo "ASSET_NAME=$ASSET_NAME" >> $GITHUB_ENV
 
       - name: Upload Release Asset
         uses: softprops/action-gh-release@v1
         with:
-          files: ${{ env.ASSET_NAME }}
+          files: |
+            ${{ env.ASSET_NAME }}
+            ${{ env.ASSET_NAME }}.sha256
 
   # 📦 Publish npm wrapper package
   npm-publish:
@@ -219,12 +226,15 @@ jobs:
           registry-url: "https://registry.npmjs.org"
 
       - name: Sync version from tag
+        env:
+          VERSION: ${{ github.ref_name }}
         run: |
-          VERSION=${GITHUB_REF#refs/tags/v}
+          VERSION=${VERSION#v}
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]] || { echo "Invalid semver tag: $VERSION"; exit 1; }
           cd npm
-          node -e "
+          VERSION="$VERSION" node -e "
             const pkg = require('./package.json');
-            pkg.version = '$VERSION';
+            pkg.version = process.env.VERSION;
             require('fs').writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
           "
           echo "Publishing memory-mcp@${VERSION} to npm"

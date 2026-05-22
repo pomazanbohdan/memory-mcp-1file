@@ -574,6 +574,13 @@ pub async fn incremental_index(
     for path in changed_paths {
         let path_str = path.to_string_lossy().to_string();
 
+        if crate::codebase::scanner::is_ignored_file(&path)
+            || !crate::codebase::scanner::is_code_file(&path)
+        {
+            tracing::debug!(path = %path_str, "Skipping ignored/non-code file from watcher event");
+            continue;
+        }
+
         if !path.exists() {
             match state
                 .storage

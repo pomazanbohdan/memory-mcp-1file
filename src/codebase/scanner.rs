@@ -123,16 +123,20 @@ pub fn is_ignored_file(path: &Path) -> bool {
         }
     }
 
+    // Hidden path components (e.g. .secret/token.py or .venv/lib/site.py)
+    // should be excluded consistently for both scanner and watcher paths.
+    if path.components().any(|component| {
+        let part = component.as_os_str().to_string_lossy();
+        part.starts_with('.') && part != "." && part != ".."
+    }) {
+        return true;
+    }
+
     let name = path
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("")
         .to_lowercase();
-
-    // Hidden files (dotfiles)
-    if name.starts_with('.') && name != "." {
-        return true;
-    }
 
     // Lock files
     if matches!(

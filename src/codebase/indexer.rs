@@ -58,12 +58,16 @@ pub async fn index_project(state: Arc<AppState>, project_path: &Path) -> Result<
                 status = existing;
             }
 
-            // Extract last known file if possible
+            // Extract last known file if possible (store file name only to avoid path disclosure)
             if let Some(monitor) = state.progress.get(&project_id).await {
                 if let Ok(cf) = monitor.current_file.read() {
                     if !cf.is_empty() {
-                        status.failed_files.push(cf.clone());
-                        status.error_message = Some(format!("{}: Failed at file {}", e, cf));
+                        let safe_name = Path::new(&*cf)
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or("unknown");
+                        status.failed_files.push(safe_name.to_string());
+                        status.error_message = Some(format!("{}: Failed at file {}", e, safe_name));
                     } else {
                         status.error_message = Some(e.to_string());
                     }
@@ -272,12 +276,16 @@ async fn do_index_project(
     }
 
     for file_path in &files {
-        // Update current file in monitor for status reporting
+        // Update current file in monitor for status reporting (file name only)
         if let Ok(mut cf) = monitor.current_file.write() {
-            *cf = file_path.to_string_lossy().to_string();
+            *cf = file_path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("unknown")
+                .to_string();
         }
 
-        tracing::info!("Indexing file: {:?}", file_path);
+        tracing::debug!(file = %file_path.display(), "Indexing file");
 
         // Skip auto-generated files (no useful semantic content)
         if crate::codebase::scanner::is_ignored_file(file_path) {

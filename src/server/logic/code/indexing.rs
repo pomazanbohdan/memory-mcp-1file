@@ -136,16 +136,16 @@ pub async fn get_index_status(
         Ok(Some(mut status)) => {
             let mut current_file: Option<String> = None;
 
-            // Always try to fetch current_file from monitor if available, even if failed or stuck
             if let Some(monitor) = state.progress.get(&params.project_id).await {
-                if let Ok(cf) = monitor.current_file.read() {
-                    if !cf.is_empty() {
-                        current_file = Some(cf.clone());
-                    }
-                }
-
-                // If we are actively indexing, update the progress counters
+                // Show current file only while indexing is active.
                 if status.status == crate::types::IndexState::Indexing {
+                    if let Ok(cf) = monitor.current_file.read() {
+                        if !cf.is_empty() {
+                            current_file = Some(cf.clone());
+                        }
+                    }
+
+                    // If we are actively indexing, update the progress counters
                     let indexed = monitor
                         .indexed_files
                         .load(std::sync::atomic::Ordering::Relaxed);

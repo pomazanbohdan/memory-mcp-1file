@@ -423,15 +423,9 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
     //   - Server runs until client closes stdin (service.waiting() resolves)
     //   - Server handles SIGINT/SIGTERM for graceful shutdown
     //   - NO reconnect: stdio is process-level, stdin can't be "reopened"
-    //   - Idle timeout is optional and disabled by default
-    let idle_future = async {
-        if cli.idle_timeout > 0 {
-            tokio::time::sleep(Duration::from_secs(cli.idle_timeout * 60)).await;
-        } else {
-            // Disabled: never resolve
-            std::future::pending::<()>().await;
-        }
-    };
+    // NOTE: We intentionally do not enforce an idle timer here because stdio
+    // does not provide a reliable request-activity signal at this layer.
+    // A fixed sleep-based timeout can terminate healthy long-lived sessions.
 
     let shutdown_reason: &str;
     let stdin_closed_flag = stdin_closed.clone();
@@ -479,10 +473,6 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
             }
             shutdown_reason = "sigterm";
         },
-        _ = idle_future => {
-            tracing::info!(minutes = cli.idle_timeout, "Idle timeout reached, shutting down");
-            shutdown_reason = "idle_timeout";
-        }
     }
 
     tracing::info!(reason = shutdown_reason, "Initiating graceful shutdown...");

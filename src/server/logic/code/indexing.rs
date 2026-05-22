@@ -364,7 +364,7 @@ pub async fn delete_project(
         .await;
 
     let _ = state.storage.delete_index_status(&params.project_id).await;
-    let _ = state.storage.delete_file_hashes(&params.project_id).await;
+    let _ = state.storage.delete_manifest_entries(&params.project_id).await;
 
     // Remove from in-memory BM25 index
     state.code_search.remove_project(&params.project_id).await;

@@ -755,6 +755,8 @@ impl StorageBackend for SurrealStorage {
             "symbol_chunk_map",
             "symbol_relation",
             "index_status",
+            "file_hashes",
+            "file_manifest",
         ];
         for table in &tables {
             let _ = self.db.query(format!("DELETE {}", table)).await;

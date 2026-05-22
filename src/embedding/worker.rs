@@ -158,6 +158,9 @@ impl EmbeddingWorker {
                 min_chars = MIN_EMBED_CHARS,
                 "Skipped short chunks from embedding"
             );
+            for _ in 0..skipped_short {
+                self.metrics.dec_queue();
+            }
             batch.retain(|r| r.target.is_some() || r.responder.is_some());
             if batch.is_empty() {
                 return true;

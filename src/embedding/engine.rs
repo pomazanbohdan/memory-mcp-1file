@@ -184,6 +184,9 @@ impl EmbeddingEngine {
                 if token_ids.len() > max_len {
                     token_ids.truncate(max_len);
                 }
+                if token_ids.is_empty() {
+                    anyhow::bail!("Cannot embed empty token sequence");
+                }
 
                 match &self.inner {
                     InnerModel::Bert(model) => {

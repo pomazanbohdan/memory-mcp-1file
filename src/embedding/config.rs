@@ -16,7 +16,8 @@ pub enum EngineBackend {
 pub enum ModelType {
     /// intfloat/multilingual-e5-small — 384d, ~85 MB Q4. Legacy lightweight option.
     E5Small,
-    /// intfloat/multilingual-e5-base — 768d, ~180 MB. Legacy; kept for backward compat.
+    /// intfloat/multilingual-e5-base — 768d, ~180 MB. Legacy; kept for backward compat. Default.
+    #[default]
     E5Multi,
     /// nomic-ai/nomic-embed-text-v1.5 — 768d, ~270 MB. Long-context BERT-compatible.
     Nomic,
@@ -24,8 +25,7 @@ pub enum ModelType {
     BgeM3,
     /// Qwen/Qwen3-Embedding-0.6B — 1024d, ~1.2 GB. Top open-source 2026, MRL, 32K ctx.
     Qwen3,
-    /// unsloth/embeddinggemma-300m-qat-q4_0-unquantized — 768d, ~195 MB. Default.
-    #[default]
+    /// unsloth/embeddinggemma-300m-qat-q4_0-unquantized — 768d, ~195 MB.
     Gemma,
     Mock,
 }

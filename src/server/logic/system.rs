@@ -83,6 +83,7 @@ pub async fn reset_all_memory(
     }
 
     state.storage.reset_db().await?;
+    state.code_search.clear_all().await;
 
     Ok(success_json(json!({
         "reset": true,
@@ -93,8 +94,9 @@ pub async fn reset_all_memory(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::search::ChunkMeta;
     use crate::test_utils::TestContext;
-    use crate::types::{Memory, MemoryType};
+    use crate::types::{ChunkType, Language, Memory, MemoryType};
 
     #[tokio::test]
     async fn test_system_logic() {
@@ -121,6 +123,27 @@ mod tests {
             })
             .await
             .unwrap();
+        ctx.state
+            .code_search
+            .upsert_chunks(
+                "proj-reset",
+                vec![(
+                    ChunkMeta {
+                        id: "chunk-1".to_string(),
+                        file_path: "src/private.rs".to_string(),
+                        language: Language::Rust,
+                        start_line: 1,
+                        end_line: 5,
+                        chunk_type: ChunkType::Function,
+                        name: Some("secret_fn".to_string()),
+                        context_path: None,
+                        project_id: "proj-reset".to_string(),
+                    },
+                    "secret token".to_string(),
+                )],
+            )
+            .await;
+        assert_eq!(ctx.state.code_search.chunk_count("proj-reset").await, 1);
 
         // 1. Get Status
         let status_params = GetStatusParams {
@@ -151,5 +174,6 @@ mod tests {
         assert!(success_json.get("reset").is_some());
 
         assert_eq!(ctx.state.storage.count_memories().await.unwrap(), 0);
+        assert_eq!(ctx.state.code_search.chunk_count("proj-reset").await, 0);
     }
 }

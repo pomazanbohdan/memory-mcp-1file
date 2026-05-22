@@ -274,7 +274,10 @@ async fn do_index_project(
     for file_path in &files {
         // Update current file in monitor for status reporting
         if let Ok(mut cf) = monitor.current_file.write() {
-            *cf = file_path.to_string_lossy().to_string();
+            *cf = file_path
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "<unknown>".to_string());
         }
 
         tracing::info!("Indexing file: {:?}", file_path);

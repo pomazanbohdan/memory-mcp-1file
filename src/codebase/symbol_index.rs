@@ -20,7 +20,13 @@ impl ResolutionContext {
 #[derive(Debug, Default)]
 pub struct SymbolIndex {
     by_name: HashMap<String, Vec<SymbolRef>>,
+    total_symbols: usize,
 }
+
+/// Hard safety limits for in-memory symbol accumulation during project indexing.
+/// These caps prevent unbounded attacker-controlled growth from exhausting RAM.
+const MAX_TOTAL_SYMBOLS: usize = 200_000;
+const MAX_SYMBOLS_PER_NAME: usize = 256;
 
 impl SymbolIndex {
     pub fn new() -> Self {
@@ -29,11 +35,18 @@ impl SymbolIndex {
 
     /// Add a symbol to the index.
     pub fn add(&mut self, symbol: &CodeSymbol) {
+        if self.total_symbols >= MAX_TOTAL_SYMBOLS {
+            return;
+        }
+
         let sym_ref = SymbolRef::from_symbol(symbol);
-        self.by_name
-            .entry(symbol.name.clone())
-            .or_default()
-            .push(sym_ref);
+        let entry = self.by_name.entry(symbol.name.clone()).or_default();
+        if entry.len() >= MAX_SYMBOLS_PER_NAME {
+            return;
+        }
+
+        entry.push(sym_ref);
+        self.total_symbols += 1;
     }
 
     /// Add multiple symbols to the index.
@@ -63,6 +76,11 @@ impl SymbolIndex {
     /// Total number of unique names in the index.
     pub fn len(&self) -> usize {
         self.by_name.len()
+    }
+
+    /// Total number of symbol refs retained in memory.
+    pub fn total_symbols(&self) -> usize {
+        self.total_symbols
     }
 
     /// Check if the index is empty.
@@ -139,5 +157,26 @@ mod tests {
         let index = SymbolIndex::new();
         let ctx = ResolutionContext::new("/src/a.rs".to_string());
         assert!(index.resolve("nonexistent", &ctx).is_none());
+    }
+
+    #[test]
+    fn test_per_name_cap() {
+        let mut index = SymbolIndex::new();
+        for i in 0..(MAX_SYMBOLS_PER_NAME as u32 + 10) {
+            index.add(&make_symbol("dup", &format!("/src/{i}.rs"), i));
+        }
+
+        let retained = index.get_all("dup").map_or(0, Vec::len);
+        assert_eq!(retained, MAX_SYMBOLS_PER_NAME);
+    }
+
+    #[test]
+    fn test_total_cap() {
+        let mut index = SymbolIndex::new();
+        for i in 0..(MAX_TOTAL_SYMBOLS as u32 + 10) {
+            index.add(&make_symbol(&format!("name_{i}"), &format!("/src/{i}.rs"), i));
+        }
+
+        assert_eq!(index.total_symbols(), MAX_TOTAL_SYMBOLS);
     }
 }

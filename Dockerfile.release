@@ -10,6 +10,7 @@ FROM alpine:3.23
 
 ARG VERSION
 ARG REPO=pomazanbohdan/memory-mcp-1file
+ARG TARBALL_SHA256
 
 # Install runtime dependencies (minimal)
 RUN apk add --no-cache ca-certificates tzdata
@@ -22,6 +23,8 @@ RUN VERSION=${VERSION:-$(cat /tmp/VERSION)} && \
     echo "Installing memory-mcp v${VERSION}" && \
     wget -q -O memory-mcp.tar.gz \
     "https://github.com/${REPO}/releases/download/v${VERSION}/memory-mcp-${VERSION}-x86_64-unknown-linux-musl.tar.gz" \
+    && test -n "${TARBALL_SHA256}" \
+    && echo "${TARBALL_SHA256}  memory-mcp.tar.gz" | sha256sum -c - \
     && tar -xzf memory-mcp.tar.gz \
     && mv memory-mcp /usr/local/bin/memory-mcp \
     && rm memory-mcp.tar.gz /tmp/VERSION \

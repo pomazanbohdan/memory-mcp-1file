@@ -162,12 +162,15 @@ pub async fn get_index_status(
                 }
             }
 
-            // Use manifest entry count as the authoritative "indexed files" number.
-            let indexed_files = state
+            // Merge persisted/live status with manifest count.
+            // Manifest can lag behind in some full-index paths, so keep the
+            // highest observed indexed_files value for accurate progress.
+            let manifest_indexed_files = state
                 .storage
                 .count_manifest_entries(&params.project_id)
                 .await
                 .unwrap_or(0) as u32;
+            let indexed_files = std::cmp::max(status.indexed_files, manifest_indexed_files);
 
             // Sync queue status from shared AtomicUsize counter.
             let sync_queue_size = {
@@ -418,12 +421,14 @@ pub async fn get_project_stats(
         .await
         .unwrap_or(0);
 
-    // Use manifest entry count as the authoritative "indexed files" number.
-    let indexed_files = state
+    // Merge persisted status with manifest count to avoid stale/empty manifest
+    // under-reporting indexed files for status/progress APIs.
+    let manifest_indexed_files = state
         .storage
         .count_manifest_entries(&params.project_id)
         .await
         .unwrap_or(0) as u32;
+    let indexed_files = std::cmp::max(status.indexed_files, manifest_indexed_files);
 
     // Sync queue status from shared AtomicUsize counter.
     let sync_queue_size = {

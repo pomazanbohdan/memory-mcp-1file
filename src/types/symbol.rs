@@ -243,10 +243,10 @@ pub struct SymbolRelation {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<Thing>,
 
-    #[serde(rename = "in", skip_serializing)]
+    #[serde(rename = "in")]
     pub from_symbol: Thing,
 
-    #[serde(rename = "out", skip_serializing)]
+    #[serde(rename = "out")]
     pub to_symbol: Thing,
 
     pub relation_type: CodeRelationType,

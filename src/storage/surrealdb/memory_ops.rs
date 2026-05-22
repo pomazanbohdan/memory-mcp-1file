@@ -88,8 +88,17 @@ pub(super) async fn bm25_search(
     // then score in Rust using term-frequency counting as a proxy for BM25.
     let fetch_limit = (limit * 3).max(limit);
 
+    const MAX_BM25_QUERY_CHARS: usize = 4096;
+    const MAX_BM25_TERMS: usize = 64;
+
+    let bounded_query: String = query.chars().take(MAX_BM25_QUERY_CHARS).collect();
+
     // Split query into individual words for multi-word matching
-    let words: Vec<&str> = query.split_whitespace().filter(|w| w.len() >= 2).collect();
+    let words: Vec<&str> = bounded_query
+        .split_whitespace()
+        .filter(|w| w.len() >= 2)
+        .take(MAX_BM25_TERMS)
+        .collect();
     if words.is_empty() {
         return Ok(vec![]);
     }
@@ -120,7 +129,7 @@ pub(super) async fn bm25_search(
     let mut results: Vec<SearchResult> = response.take(0)?;
 
     // Compute relevance score in Rust: normalized term frequency.
-    let query_lower = query.to_lowercase();
+    let query_lower = bounded_query.to_lowercase();
     let query_words: Vec<&str> = query_lower.split_whitespace().collect();
     for r in &mut results {
         let content_lower = r.content.to_lowercase();

@@ -42,9 +42,15 @@ jobs:
           targets: x86_64-unknown-linux-musl
 
       - name: Rust Cache
-        uses: Swatinem/rust-cache@v2
+        uses: actions/cache@v4
         with:
-          key: x86_64-unknown-linux-musl
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-x86_64-unknown-linux-musl-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-x86_64-unknown-linux-musl-
 
       - name: Build MUSL
         env:
@@ -148,9 +154,15 @@ jobs:
           targets: ${{ matrix.target }}
 
       - name: Rust Cache
-        uses: Swatinem/rust-cache@v2
+        uses: actions/cache@v4
         with:
-          key: ${{ matrix.target }}
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-${{ matrix.target }}-
 
       - name: Build
         shell: bash

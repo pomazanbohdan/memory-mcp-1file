@@ -337,7 +337,8 @@ pub(super) async fn bm25_search_code(
     limit: usize,
 ) -> Result<Vec<ScoredCodeChunk>> {
     // SurrealDB v3.0.0: search::score() is broken (bug #6852/#6946).
-    // CONTAINS provides correct filtering; scoring is done in Rust.
+    // Use FULLTEXT operator so SurrealDB can use BM25 index;
+    // scoring is still done in Rust because search::score() is broken.
     // The project_id IS NONE pattern works: SurrealDB Rust SDK maps
     // Rust's Option::None to SurrealDB NONE (not NULL).
     let fetch_limit = (limit * 3).max(limit);
@@ -354,7 +355,7 @@ pub(super) async fn bm25_search_code(
             context_path,
             1.0f AS score
         FROM code_chunks
-        WHERE string::lowercase(content) CONTAINS string::lowercase($query)
+        WHERE content @0@ $query
           AND ($project_id IS NONE OR project_id = $project_id)
         LIMIT $limit
     "#;

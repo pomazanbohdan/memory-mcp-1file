@@ -103,11 +103,12 @@ pub(super) async fn bm25_search(
         return Ok(vec![]);
     }
 
-    // Build WHERE clause: each word must be present (AND)
+    // Build WHERE clause with FULLTEXT operator so SurrealDB can use BM25 index.
+    // Keep Rust-side scoring because search::score() is broken in SurrealDB v3.
     let conditions: Vec<String> = words
         .iter()
         .enumerate()
-        .map(|(i, _)| format!("string::lowercase(content) CONTAINS string::lowercase($w{i})"))
+        .map(|(i, _)| format!("content @0@ $w{i}"))
         .collect();
     let where_clause = conditions.join(" AND ");
 

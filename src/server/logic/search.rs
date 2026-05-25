@@ -13,6 +13,18 @@ use crate::types::{MemoryType, ScoredMemory, SearchResult};
 
 use super::{error_response, normalize_limit, success_json};
 
+const MAX_SEARCH_QUERY_CHARS: usize = 4_000;
+
+fn validate_search_query(query: &str) -> anyhow::Result<()> {
+    if query.chars().count() > MAX_SEARCH_QUERY_CHARS {
+        anyhow::bail!(
+            "query is too long (max {} characters)",
+            MAX_SEARCH_QUERY_CHARS
+        );
+    }
+    Ok(())
+}
+
 fn normalize_memory_content(content: &str) -> String {
     content.split_whitespace().collect::<Vec<_>>().join(" ")
 }
@@ -55,6 +67,7 @@ fn apply_min_score(mut results: Vec<SearchResult>, min_score: Option<f32>) -> Ve
 
 pub async fn search(state: &Arc<AppState>, params: SearchParams) -> anyhow::Result<CallToolResult> {
     crate::ensure_embedding_ready!(state);
+    validate_search_query(&params.query)?;
 
     let query_embedding = state.embedding.embed(&params.query).await?;
 
@@ -80,6 +93,7 @@ pub async fn search_text(
     state: &Arc<AppState>,
     params: SearchParams,
 ) -> anyhow::Result<CallToolResult> {
+    validate_search_query(&params.query)?;
     let limit = normalize_limit(params.limit);
     let results = match state.storage.bm25_search(&params.query, limit * 3).await {
         Ok(r) => r,
@@ -99,6 +113,7 @@ pub async fn recall(state: &Arc<AppState>, params: RecallParams) -> anyhow::Resu
     use std::collections::HashMap;
 
     crate::ensure_embedding_ready!(state);
+    validate_search_query(&params.query)?;
 
     let query_embedding = state.embedding.embed(&params.query).await?;
 

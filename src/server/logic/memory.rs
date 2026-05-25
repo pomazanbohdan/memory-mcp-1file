@@ -15,11 +15,24 @@ use crate::types::{Memory, MemoryType, MemoryUpdate};
 
 use super::{error_response, normalize_limit, strip_embedding, strip_embeddings, success_json};
 
+const MAX_MEMORY_CONTENT_CHARS: usize = 16_000;
+
+fn validate_memory_content(content: &str) -> anyhow::Result<()> {
+    if content.chars().count() > MAX_MEMORY_CONTENT_CHARS {
+        anyhow::bail!(
+            "content is too long (max {} characters)",
+            MAX_MEMORY_CONTENT_CHARS
+        );
+    }
+    Ok(())
+}
+
 pub async fn store_memory(
     state: &Arc<AppState>,
     params: StoreMemoryParams,
 ) -> anyhow::Result<CallToolResult> {
     crate::ensure_embedding_ready!(state);
+    validate_memory_content(&params.content)?;
 
     let embedding = state.embedding.embed(&params.content).await?;
 
@@ -69,6 +82,7 @@ pub async fn update_memory(
     params: UpdateMemoryParams,
 ) -> anyhow::Result<CallToolResult> {
     let (embedding, content_hash, embedding_state) = if let Some(ref new_content) = params.content {
+        validate_memory_content(new_content)?;
         let old_memory = state.storage.get_memory(&params.id).await?;
         let old_hash = old_memory.as_ref().and_then(|m| m.content_hash.as_deref());
 

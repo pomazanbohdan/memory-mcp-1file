@@ -3,6 +3,40 @@ use std::sync::Arc;
 use rmcp::model::CallToolResult;
 use serde_json::json;
 
+fn resolve_allowed_index_root() -> std::path::PathBuf {
+    std::env::var("MEMORY_MCP_ALLOWED_INDEX_ROOT")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| std::path::PathBuf::from("/project"))
+}
+
+fn validate_index_path(path: &std::path::Path) -> anyhow::Result<std::path::PathBuf> {
+    if !path.exists() {
+        anyhow::bail!("Path does not exist: {}", path.display());
+    }
+
+    let canonical_path = path
+        .canonicalize()
+        .map_err(|e| anyhow::anyhow!("Failed to resolve path {}: {e}", path.display()))?;
+
+    let allowed_root = resolve_allowed_index_root();
+    let canonical_root = allowed_root.canonicalize().map_err(|e| {
+        anyhow::anyhow!(
+            "Failed to resolve allowed root {}: {e}",
+            allowed_root.display()
+        )
+    })?;
+
+    if !canonical_path.starts_with(&canonical_root) {
+        anyhow::bail!(
+            "Path is outside allowed root. allowed_root={}, requested_path={}",
+            canonical_root.display(),
+            canonical_path.display()
+        );
+    }
+
+    Ok(canonical_path)
+}
+
 use crate::config::AppState;
 use crate::server::params::{
     DeleteProjectParams, GetIndexStatusParams, GetProjectStatsParams, IndexProjectParams,
@@ -16,14 +50,11 @@ pub async fn index_project(
     state: &Arc<AppState>,
     params: IndexProjectParams,
 ) -> anyhow::Result<CallToolResult> {
-    let path = std::path::Path::new(&params.path);
-
-    if !path.exists() {
-        return Ok(error_response(format!(
-            "Path does not exist: {}",
-            params.path
-        )));
-    }
+    let requested_path = std::path::Path::new(&params.path);
+    let path = match validate_index_path(requested_path) {
+        Ok(path) => path,
+        Err(e) => return Ok(error_response(e.to_string())),
+    };
 
     let project_id = path
         .file_name()
@@ -96,12 +127,11 @@ pub async fn index_project(
 
     // Spawn indexing in background
     let state_clone = state.clone();
-    let path_clone = params.path.clone();
+    let path_clone = path.clone();
     let project_id_for_cleanup = project_id.clone();
 
     tokio::spawn(async move {
-        let path = std::path::Path::new(&path_clone);
-        match crate::codebase::index_project(state_clone.clone(), path).await {
+        match crate::codebase::index_project(state_clone.clone(), &path_clone).await {
             Ok(status) => {
                 tracing::info!(
                     project_id = %status.project_id,
@@ -511,9 +541,17 @@ pub async fn get_degradation_info(state: &Arc<AppState>) -> Option<serde_json::V
         }
 
         let total_chunks = state.storage.count_chunks(project_id).await.unwrap_or(0);
-        let embedded_chunks = state.storage.count_embedded_chunks(project_id).await.unwrap_or(0);
+        let embedded_chunks = state
+            .storage
+            .count_embedded_chunks(project_id)
+            .await
+            .unwrap_or(0);
         let total_symbols = state.storage.count_symbols(project_id).await.unwrap_or(0);
-        let embedded_symbols = state.storage.count_embedded_symbols(project_id).await.unwrap_or(0);
+        let embedded_symbols = state
+            .storage
+            .count_embedded_symbols(project_id)
+            .await
+            .unwrap_or(0);
 
         let chunk_pct = if total_chunks > 0 {
             (embedded_chunks as f64 / total_chunks as f64) * 100.0

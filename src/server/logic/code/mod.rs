@@ -34,6 +34,8 @@ mod tests {
         )
         .unwrap();
 
+        std::env::set_var("MEMORY_MCP_ALLOWED_INDEX_ROOT", ctx._temp_dir.path());
+
         let index_params = IndexProjectParams {
             path: project_path.to_string_lossy().to_string(),
             force: None,

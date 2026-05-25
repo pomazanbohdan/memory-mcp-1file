@@ -1,4 +1,3 @@
-use num_cpus;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -18,6 +17,9 @@ use super::symbol_index::SymbolIndex;
 use crate::embedding::{EmbeddingRequest, EmbeddingTarget};
 use crate::types::code::CodeChunk;
 use crate::types::symbol::{CodeReference, CodeSymbol};
+
+const MAX_CHUNKS_PER_FILE: usize = 50;
+const MAX_CONCURRENT_PARSES: usize = 4;
 
 pub async fn index_project(state: Arc<AppState>, project_path: &Path) -> Result<IndexStatus> {
     let project_id = project_path
@@ -129,7 +131,7 @@ async fn do_index_project(
     // sequential spawn_blocking. Up to max_concurrent_parses files are parsed on
     // the blocking thread pool simultaneously.
     #[allow(clippy::type_complexity)]
-    let max_concurrent_parses = std::cmp::max(4, num_cpus::get() / 2);
+    let max_concurrent_parses = MAX_CONCURRENT_PARSES;
     #[allow(clippy::type_complexity)]
     let mut parse_set: tokio::task::JoinSet<(
         Vec<CodeChunk>,
@@ -142,10 +144,20 @@ async fn do_index_project(
     // Expands in place so it can mutate surrounding locals and use `.await`.
     macro_rules! drain_one_parse {
         ($join_result:expr) => {{
-            let (chunks, symbols, references, fp_str) = $join_result
+            let (mut chunks, symbols, references, fp_str) = $join_result
                 .map_err(|e| crate::AppError::Internal(
                     format!("parse/chunk panicked: {e}").into(),
                 ))?;
+
+            if chunks.len() > MAX_CHUNKS_PER_FILE {
+                tracing::warn!(
+                    file = %fp_str,
+                    total_chunks = chunks.len(),
+                    kept_chunks = MAX_CHUNKS_PER_FILE,
+                    "Too many chunks in file, truncating",
+                );
+                chunks.truncate(MAX_CHUNKS_PER_FILE);
+            }
 
             for chunk in chunks {
                 chunk_buffer.push(chunk);
@@ -475,7 +487,7 @@ pub async fn incremental_index(
     }
 
     // Issue 4 fix: Bounded-concurrency parsing via JoinSet (same pattern as do_index_project).
-    let max_concurrent_parses = std::cmp::max(4, num_cpus::get() / 2);
+    let max_concurrent_parses = MAX_CONCURRENT_PARSES;
     // Return type: (chunks, symbols, references, path_str, new_hash)
     type IncrResult = (
         Vec<CodeChunk>,

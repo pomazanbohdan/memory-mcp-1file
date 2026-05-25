@@ -1,8 +1,7 @@
 name: Release
 
 permissions:
-  contents: write
-  packages: write
+  contents: read
 
 on:
   push:
@@ -14,11 +13,15 @@ env:
 
 jobs:
   create-release:
+    permissions:
+      contents: write
     runs-on: ubuntu-latest
     outputs:
       upload_url: ${{ steps.create_release.outputs.upload_url }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       
       - name: Create Release
         id: create_release
@@ -31,10 +34,14 @@ jobs:
   # 🚀 Critical Path: Build MUSL -> Publish Docker
   build-musl:
     needs: create-release
+    permissions:
+      contents: write
     name: Build Linux MUSL (Docker)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -50,7 +57,7 @@ jobs:
         env:
           RUSTFLAGS: "-C target-cpu=x86-64-v3"
         run: |
-          cargo install cross
+          cargo install --locked cross --version 0.2.5
           cross build --release --target x86_64-unknown-linux-musl
         shell: bash
 
@@ -74,9 +81,14 @@ jobs:
 
   docker-release:
     needs: build-musl
+    permissions:
+      contents: read
+      packages: write
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Log in to the Container registry
         uses: docker/login-action@v3
@@ -116,6 +128,8 @@ jobs:
   # 📦 Secondary Path: Build other binaries
   build-others:
     needs: create-release
+    permissions:
+      contents: write
     name: Build ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
     strategy:
@@ -141,6 +155,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -172,7 +188,7 @@ jobs:
           esac
 
           if [ "${{ matrix.use_cross }}" = "true" ]; then
-            cargo install cross
+            cargo install --locked cross --version 0.2.5
             cross build --release --target "$TARGET" $FEATURES
           else
             cargo build --release --target "$TARGET" $FEATURES
@@ -208,9 +224,13 @@ jobs:
   # 📦 Publish npm wrapper package
   npm-publish:
     needs: [build-musl, build-others]
+    permissions:
+      contents: read
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Setup Node.js
         uses: actions/setup-node@v4

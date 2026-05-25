@@ -1,7 +1,8 @@
 name: Release
 
 permissions:
-  contents: read
+  contents: write
+  packages: write
 
 on:
   push:
@@ -13,15 +14,11 @@ env:
 
 jobs:
   create-release:
-    permissions:
-      contents: write
     runs-on: ubuntu-latest
     outputs:
       upload_url: ${{ steps.create_release.outputs.upload_url }}
     steps:
       - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
       
       - name: Create Release
         id: create_release
@@ -34,14 +31,10 @@ jobs:
   # 🚀 Critical Path: Build MUSL -> Publish Docker
   build-musl:
     needs: create-release
-    permissions:
-      contents: write
     name: Build Linux MUSL (Docker)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -57,7 +50,7 @@ jobs:
         env:
           RUSTFLAGS: "-C target-cpu=x86-64-v3"
         run: |
-          cargo install --locked cross --version 0.2.5
+          cargo install cross
           cross build --release --target x86_64-unknown-linux-musl
         shell: bash
 
@@ -71,24 +64,22 @@ jobs:
           
           echo "Packaging $BIN_PATH to $ASSET_NAME"
           tar -czf "$ASSET_NAME" -C $(dirname "$BIN_PATH") "$BINARY_NAME"
-          
+          sha256sum "$ASSET_NAME" > "$ASSET_NAME.sha256"
+
           echo "ASSET_NAME=$ASSET_NAME" >> $GITHUB_ENV
 
       - name: Upload Release Asset
         uses: softprops/action-gh-release@v1
         with:
-          files: ${{ env.ASSET_NAME }}
+          files: |
+            ${{ env.ASSET_NAME }}
+            ${{ env.ASSET_NAME }}.sha256
 
   docker-release:
     needs: build-musl
-    permissions:
-      contents: read
-      packages: write
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
 
       - name: Log in to the Container registry
         uses: docker/login-action@v3
@@ -128,22 +119,12 @@ jobs:
   # 📦 Secondary Path: Build other binaries
   build-others:
     needs: create-release
-    permissions:
-      contents: write
     name: Build ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - target: aarch64-unknown-linux-musl
-            os: ubuntu-latest
-            use_cross: true
-            archive_ext: .tar.gz
-          - target: aarch64-unknown-linux-gnu
-            os: ubuntu-latest
-            use_cross: true
-            archive_ext: .tar.gz
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
             use_cross: false
@@ -163,8 +144,6 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -196,7 +175,7 @@ jobs:
           esac
 
           if [ "${{ matrix.use_cross }}" = "true" ]; then
-            cargo install --locked cross --version 0.2.5
+            cargo install cross
             cross build --release --target "$TARGET" $FEATURES
           else
             cargo build --release --target "$TARGET" $FEATURES
@@ -218,27 +197,27 @@ jobs:
           
           if [ "${{ matrix.archive_ext }}" = ".zip" ]; then
             7z a "$ASSET_NAME" "$BIN_PATH"
+            sha256sum "$ASSET_NAME" > "$ASSET_NAME.sha256"
           else
             tar -czf "$ASSET_NAME" -C $(dirname "$BIN_PATH") "$BINARY_NAME"
+            shasum -a 256 "$ASSET_NAME" | awk '{print $1 "  " $2}' > "$ASSET_NAME.sha256"
           fi
-          
+
           echo "ASSET_NAME=$ASSET_NAME" >> $GITHUB_ENV
 
       - name: Upload Release Asset
         uses: softprops/action-gh-release@v1
         with:
-          files: ${{ env.ASSET_NAME }}
+          files: |
+            ${{ env.ASSET_NAME }}
+            ${{ env.ASSET_NAME }}.sha256
 
   # 📦 Publish npm wrapper package
   npm-publish:
     needs: [build-musl, build-others]
-    permissions:
-      contents: read
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -247,12 +226,11 @@ jobs:
           registry-url: "https://registry.npmjs.org"
 
       - name: Sync version from tag
+        env:
+          VERSION: ${{ github.ref_name }}
         run: |
-          VERSION=${GITHUB_REF#refs/tags/v}
-          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.-]+)?$ ]]; then
-            echo "Invalid semver tag: $VERSION"
-            exit 1
-          fi
+          VERSION=${VERSION#v}
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]] || { echo "Invalid semver tag: $VERSION"; exit 1; }
           cd npm
           VERSION="$VERSION" node -e "
             const pkg = require('./package.json');

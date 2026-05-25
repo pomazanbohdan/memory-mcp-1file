@@ -14,6 +14,8 @@ use crate::types::{AppError, Result};
 const STATUS_LOADING: u8 = 0;
 const STATUS_READY: u8 = 1;
 const STATUS_ERROR: u8 = 2;
+const REDACTED_LOAD_ERROR_MESSAGE: &str =
+    "Embedding model failed to initialize. Check server logs for details.";
 
 struct LoadState {
     started_at: Instant,
@@ -69,81 +71,83 @@ impl EmbeddingService {
             .name("emb-loader".into())
             .stack_size(16 * 1024 * 1024) // 16 MB — Candle models need deep stack for tensor ops
             .spawn(move || {
-            let rt = match tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-            {
-                Ok(rt) => rt,
-                Err(e) => {
-                    tracing::error!("Failed to build embedding runtime: {}", e);
-                    status_clone.store(STATUS_ERROR, Ordering::SeqCst);
-                    return;
-                }
-            };
+                let rt = match tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                {
+                    Ok(rt) => rt,
+                    Err(e) => {
+                        tracing::error!("Failed to build embedding runtime: {}", e);
+                        status_clone.store(STATUS_ERROR, Ordering::SeqCst);
+                        return;
+                    }
+                };
 
-            rt.block_on(async {
-                let mut state = load_state.write().await;
-                state.started_at = Instant::now();
-                state.phase = LoadingPhase::Starting;
-                drop(state);
-            });
-
-            if let Some(ref dir) = cache_dir {
                 rt.block_on(async {
                     let mut state = load_state.write().await;
-                    state.phase = LoadingPhase::CleaningCache;
+                    state.started_at = Instant::now();
+                    state.phase = LoadingPhase::Starting;
                     drop(state);
                 });
 
-                let cleanup_result = cleanup_model_cache(dir, model, &CleanupConfig::default());
-                if !cleanup_result.is_empty() {
-                    tracing::info!(
-                        "Cache cleanup: {} locks removed, {} incomplete files removed",
-                        cleanup_result.locks_removed,
-                        cleanup_result.incomplete_removed
-                    );
-                }
-                for err in &cleanup_result.errors {
-                    tracing::warn!("Cleanup error: {}", err);
-                }
-            }
-
-            tracing::info!("Loading embedding model: {:?}", model);
-
-            match Self::load_model_with_tracking(model, mrl_dim, cache_dir, load_state.clone()) {
-                Ok(engine) => {
+                if let Some(ref dir) = cache_dir {
                     rt.block_on(async {
                         let mut state = load_state.write().await;
-                        state.phase = LoadingPhase::WarmingUp;
-                        state.progress_percent = None;
+                        state.phase = LoadingPhase::CleaningCache;
                         drop(state);
-
-                        if let Err(e) = engine.embed("warmup") {
-                            tracing::warn!("Warmup failed (non-fatal): {}", e);
-                        }
-
-                        let mut guard = engine_state.write().await;
-                        *guard = Some(Arc::new(engine));
                     });
 
-                    status.store(STATUS_READY, Ordering::SeqCst);
-                    let elapsed =
-                        rt.block_on(async { load_state.read().await.started_at.elapsed() });
-                    tracing::info!(
-                        elapsed_sec = format!("{:.1}", elapsed.as_secs_f64()),
-                        "Embedding model ready"
-                    );
+                    let cleanup_result = cleanup_model_cache(dir, model, &CleanupConfig::default());
+                    if !cleanup_result.is_empty() {
+                        tracing::info!(
+                            "Cache cleanup: {} locks removed, {} incomplete files removed",
+                            cleanup_result.locks_removed,
+                            cleanup_result.incomplete_removed
+                        );
+                    }
+                    for err in &cleanup_result.errors {
+                        tracing::warn!("Cleanup error: {}", err);
+                    }
                 }
-                Err(e) => {
-                    rt.block_on(async {
-                        let mut state = load_state.write().await;
-                        state.error_message = Some(e.to_string());
-                    });
-                    tracing::error!("Failed to load embedding model: {}", e);
-                    status.store(STATUS_ERROR, Ordering::SeqCst);
+
+                tracing::info!("Loading embedding model: {:?}", model);
+
+                match Self::load_model_with_tracking(model, mrl_dim, cache_dir, load_state.clone())
+                {
+                    Ok(engine) => {
+                        rt.block_on(async {
+                            let mut state = load_state.write().await;
+                            state.phase = LoadingPhase::WarmingUp;
+                            state.progress_percent = None;
+                            drop(state);
+
+                            if let Err(e) = engine.embed("warmup") {
+                                tracing::warn!("Warmup failed (non-fatal): {}", e);
+                            }
+
+                            let mut guard = engine_state.write().await;
+                            *guard = Some(Arc::new(engine));
+                        });
+
+                        status.store(STATUS_READY, Ordering::SeqCst);
+                        let elapsed =
+                            rt.block_on(async { load_state.read().await.started_at.elapsed() });
+                        tracing::info!(
+                            elapsed_sec = format!("{:.1}", elapsed.as_secs_f64()),
+                            "Embedding model ready"
+                        );
+                    }
+                    Err(e) => {
+                        rt.block_on(async {
+                            let mut state = load_state.write().await;
+                            state.error_message = Some(REDACTED_LOAD_ERROR_MESSAGE.to_string());
+                        });
+                        tracing::error!("Failed to load embedding model: {}", e);
+                        status.store(STATUS_ERROR, Ordering::SeqCst);
+                    }
                 }
-            }
-        }).expect("Failed to spawn embedding loader thread");
+            })
+            .expect("Failed to spawn embedding loader thread");
     }
 
     /// Pure filesystem check — no network I/O.
@@ -328,7 +332,7 @@ impl EmbeddingService {
                     message: state
                         .error_message
                         .clone()
-                        .unwrap_or_else(|| "Unknown error".to_string()),
+                        .unwrap_or_else(|| REDACTED_LOAD_ERROR_MESSAGE.to_string()),
                 }
             }
         }

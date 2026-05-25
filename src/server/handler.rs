@@ -253,20 +253,19 @@ impl MemoryMcpServer {
         &self,
         params: Parameters<RecallCodeParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        if params.0.mode.as_deref() == Some("vector") {
-            let search_params = SearchCodeParams {
-                query: params.0.query,
-                project_id: params.0.project_id,
-                limit: params.0.limit,
-            };
-            logic::code::search_code(&self.state, search_params)
-                .await
-                .map_err(to_rpc_error)
-        } else {
-            logic::code::recall_code(&self.state, params.0)
-                .await
-                .map_err(to_rpc_error)
+        let mut recall_params = params.0;
+
+        // Keep recall_code filters (path/language/chunk) enforced in all modes.
+        // vector mode is represented as hybrid with non-vector channels disabled.
+        if recall_params.mode.as_deref() == Some("vector") {
+            recall_params.vector_weight = Some(1.0);
+            recall_params.bm25_weight = Some(0.0);
+            recall_params.ppr_weight = Some(0.0);
         }
+
+        logic::code::recall_code(&self.state, recall_params)
+            .await
+            .map_err(to_rpc_error)
     }
 
     #[tool(description = "Project info. Actions: list() | status(project_id) | stats(project_id)")]

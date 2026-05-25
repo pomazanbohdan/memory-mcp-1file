@@ -475,6 +475,7 @@ pub async fn incremental_index(
     changed_paths: Vec<std::path::PathBuf>,
 ) -> Result<IncrementalResult> {
     let mut result = IncrementalResult::default();
+    let mut cached_project_symbols: Option<Vec<CodeSymbol>> = None;
     // Keep a local alias for the previous `updated` counter used inside the macro.
     macro_rules! inc_updated {
         () => {
@@ -557,8 +558,11 @@ pub async fn incremental_index(
 
             if !all_refs.is_empty() {
                 let mut symbol_index = SymbolIndex::new();
-                if let Ok(all_symbols) = state.storage.get_project_symbols(project_id).await {
-                    symbol_index.add_batch(&all_symbols);
+                if cached_project_symbols.is_none() {
+                    cached_project_symbols = state.storage.get_project_symbols(project_id).await.ok();
+                }
+                if let Some(all_symbols) = &cached_project_symbols {
+                    symbol_index.add_batch(all_symbols);
                 }
                 symbol_index.add_batch(&symbols);
                 let _stats = create_symbol_relations(

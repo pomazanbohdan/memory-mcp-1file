@@ -52,8 +52,8 @@ fn chunk_by_ast(
     let root = tree.root_node();
     let source = content.as_bytes();
 
-    // Recursively walk the AST to find chunk-worthy nodes at any depth
-    walk_ast_recursive(
+    // Iteratively walk the AST to find chunk-worthy nodes at any depth
+    walk_ast_iterative(
         root,
         source,
         content,
@@ -70,10 +70,10 @@ fn chunk_by_ast(
     chunks
 }
 
-/// Recursively walk the AST tree, chunking definitions at any nesting depth.
-/// Builds hierarchical context_path (breadcrumbs) for each chunk.
-fn walk_ast_recursive(
-    node: tree_sitter::Node,
+/// Iteratively walk the AST tree, chunking definitions at any nesting depth.
+/// Builds hierarchical context_path (breadcrumbs) for each chunk without recursive calls.
+fn walk_ast_iterative(
+    root: tree_sitter::Node,
     source: &[u8],
     content: &str,
     file_path: &str,
@@ -81,67 +81,65 @@ fn walk_ast_recursive(
     language: &Language,
     chunks: &mut Vec<CodeChunk>,
 ) {
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        let start_byte = child.start_byte();
-        let end_byte = child.end_byte();
-        let node_text = content.get(start_byte..end_byte).unwrap_or("");
+    let mut stack = vec![root];
 
-        if node_text.len() < MIN_CHUNK_CHARS {
-            continue;
-        }
+    while let Some(node) = stack.pop() {
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            let start_byte = child.start_byte();
+            let end_byte = child.end_byte();
+            let node_text = content.get(start_byte..end_byte).unwrap_or("");
 
-        let chunk_type = detect_chunk_type(&child);
-        let is_named_scope = is_scope_node(child.kind());
+            if node_text.len() < MIN_CHUNK_CHARS {
+                continue;
+            }
 
-        if is_chunk_worthy(&child, chunk_type.clone()) {
-            let context_path = build_context_path(child, source);
+            let chunk_type = detect_chunk_type(&child);
+            let is_named_scope = is_scope_node(child.kind());
 
-            if node_text.len() <= MAX_CHUNK_CHARS {
-                let line_count = child.end_position().row - child.start_position().row + 1;
-                if chunk_type == ChunkType::Other && line_count < MIN_OTHER_CHUNK_LINES {
-                    // Skip noise, but still recurse into named scopes
-                    if is_named_scope {
-                        walk_ast_recursive(
-                            child, source, content, file_path, project_id, language, chunks,
-                        );
+            if is_chunk_worthy(&child, chunk_type.clone()) {
+                let context_path = build_context_path(child, source);
+
+                if node_text.len() <= MAX_CHUNK_CHARS {
+                    let line_count = child.end_position().row - child.start_position().row + 1;
+                    if chunk_type == ChunkType::Other && line_count < MIN_OTHER_CHUNK_LINES {
+                        // Skip noise, but still recurse into named scopes
+                        if is_named_scope {
+                            stack.push(child);
+                        }
+                        continue;
                     }
-                    continue;
+                    chunks.push(create_chunk(
+                        node_text,
+                        file_path,
+                        project_id,
+                        language.clone(),
+                        child.start_position().row as u32 + 1,
+                        child.end_position().row as u32 + 1,
+                        chunk_type,
+                        context_path,
+                    ));
+                } else {
+                    let sub_chunks = split_large_node(
+                        node_text,
+                        file_path,
+                        project_id,
+                        language.clone(),
+                        child.start_position().row as u32 + 1,
+                        context_path,
+                    );
+                    chunks.extend(sub_chunks);
                 }
-                chunks.push(create_chunk(
-                    node_text,
-                    file_path,
-                    project_id,
-                    language.clone(),
-                    child.start_position().row as u32 + 1,
-                    child.end_position().row as u32 + 1,
-                    chunk_type,
-                    context_path,
-                ));
-            } else {
-                let sub_chunks = split_large_node(
-                    node_text,
-                    file_path,
-                    project_id,
-                    language.clone(),
-                    child.start_position().row as u32 + 1,
-                    context_path,
-                );
-                chunks.extend(sub_chunks);
-            }
 
-            // Also recurse into this node to find nested definitions
-            // (e.g. methods inside impl blocks, nested classes)
-            if is_named_scope {
-                walk_ast_recursive(
-                    child, source, content, file_path, project_id, language, chunks,
-                );
+                // Also recurse into this node to find nested definitions
+                // (e.g. methods inside impl blocks, nested classes)
+                if is_named_scope {
+                    stack.push(child);
+                }
+            } else if is_named_scope {
+                // Not chunk-worthy itself, but may contain chunk-worthy children
+                stack.push(child);
             }
-        } else if is_named_scope {
-            // Not chunk-worthy itself, but may contain chunk-worthy children
-            walk_ast_recursive(
-                child, source, content, file_path, project_id, language, chunks,
-            );
         }
     }
 }

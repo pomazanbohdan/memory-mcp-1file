@@ -71,7 +71,7 @@ jobs:
               FEATURES=""
               ;;
             *-apple-darwin)
-              FEATURES="--features accelerate"
+              FEATURES=""
               ;;
           esac
           

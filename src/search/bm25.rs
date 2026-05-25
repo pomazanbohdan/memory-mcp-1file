@@ -305,6 +305,11 @@ impl CodeSearchEngine {
         self.projects.write().await.remove(project_id);
     }
 
+    /// Clear all in-memory BM25 project indexes.
+    pub async fn clear_all(&self) {
+        self.projects.write().await.clear();
+    }
+
     /// Add or update individual chunks in the index (called after incremental indexing).
     ///
     /// `chunks` is a `(ChunkMeta, content)` pair — `content` is used only to

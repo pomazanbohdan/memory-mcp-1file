@@ -54,10 +54,16 @@ jobs:
           targets: ${{ matrix.target }}
 
       - name: Setup Rust Cache
-        uses: Swatinem/rust-cache@v2
+        uses: actions/cache@v4
         with:
-          key: seed-${{ matrix.target }}
-          cache-on-failure: false
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: seed-${{ matrix.target }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            seed-${{ matrix.target }}-cargo-
 
       # Build dependencies only (skip compiling the binary and skip LTO linking)
       - name: Compile dependencies
@@ -101,10 +107,16 @@ jobs:
         uses: taiki-e/install-action@cross
 
       - name: Setup Rust Cache
-        uses: Swatinem/rust-cache@v2
+        uses: actions/cache@v4
         with:
-          key: seed-x86_64-unknown-linux-musl
-          cache-on-failure: false
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: seed-x86_64-unknown-linux-musl-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            seed-x86_64-unknown-linux-musl-cargo-
 
       - name: Compile dependencies
         run: cross build --release --lib --target x86_64-unknown-linux-musl

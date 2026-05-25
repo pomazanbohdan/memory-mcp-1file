@@ -662,7 +662,7 @@ docker run -d \
 |--------|-----------|-------------|
 | **stdin** | `tail -f /dev/null \| memory-mcp` | `cat /dev/zero \| memory-mcp` (**OOM!** нескінченний бінарний потік) |
 | **Volume для /data** | `-v memory-mcp-data:/data` (named volume, persist між rm/run) | без volume (модель ~800MB качається з мережі щоразу) |
-| **Memory limit** | `--memory 4g` (мінімум для Qwen3 1024d) | без ліміту (SurrealKV block cache з'їсть RAM/2-1GB) |
+| **Memory limit** | `--memory 4g` (мінімум для e5_multi 768d) | без ліміту (SurrealKV block cache з'їсть RAM/2-1GB) |
 
 ### Моніторинг
 
@@ -803,19 +803,19 @@ echo "EXIT_CODE=$?"
 | `bm25_hits: 0` | BM25 не прогрітий (перші секунди після старту) | Збільш sleep між NOTIF та першим запитом |
 | Порожня відповідь + EXIT 124 | timeout занадто короткий | Збільш timeout та sleep між запитами |
 
-### Memory Budget (Qwen3 1024d, 4GB limit)
+### Memory Budget (e5_multi 768d, 4GB limit)
 
 ```
 SurrealKV block cache:  256MB  (env SURREAL_SURREALKV_BLOCK_CACHE_CAPACITY)
-Qwen3 model (mmap):   1200MB  (поступово page-in)
+e5_multi model (mmap):   ~1100MB  (поступово page-in)
 HNSW indexes (4×):      60MB  (~10K vectors)
 BM25 engine:            40MB  (streaming rebuild)
 Runtime + stacks:      100MB  (8MB per thread)
 ─────────────────────────────
-Steady state:         ~1700MB
+Steady state:         ~1500MB
 + Indexing peak:       +400MB
 ─────────────────────────────
-Peak:                 ~2100MB  (headroom ~1900MB при 4GB)
+Peak:                 ~1900MB  (headroom ~2100MB при 4GB)
 ```
 
 ### Відомі проблеми
@@ -825,9 +825,9 @@ Peak:                 ~2100MB  (headroom ~1900MB при 4GB)
 | "Previous indexing interrupted" | Попередній контейнер був OOM-killed під час індексації | Нормально — перезапуск індексації |
 | Модель качається з мережі | `/data` volume не збережений | Використовувати named volume `-v memory-mcp-data:/data` |
 | OOM при 4GB | SurrealKV block cache авто = RAM/2-1GB | ENV `SURREAL_SURREALKV_BLOCK_CACHE_CAPACITY=268435456` (256MB) |
-| Індексація "failed" після 300с | completion_monitor stall timeout занадто короткий | Збільшено до 1800с (30 хв) для Qwen3 CPU |
+| Індексація "failed" після 300с | completion_monitor stall timeout занадто короткий | Збільшено до 1800с (30 хв) для e5_multi CPU |
 | CPU лише 130% | `RAYON_NUM_THREADS` не встановлено | ENV `RAYON_NUM_THREADS=0` (авто-detect всі ядра) |
 
 ---
 
-*Last updated: 2026-03-02*
+*Last updated: 2026-05-22*

@@ -343,7 +343,7 @@ Environment variables or CLI args:
 | Arg | Env | Default | Description |
 |-----|-----|---------|-------------|
 | `--data-dir` | `DATA_DIR` | `./data` | DB location |
-| `--model` | `EMBEDDING_MODEL` | `qwen3` | Embedding model (`qwen3`, `gemma`, `bge_m3`, `nomic`, `e5_multi`, `e5_small`) |
+| `--model` | `EMBEDDING_MODEL` | `e5_multi` | Embedding model (`qwen3`, `gemma`, `bge_m3`, `nomic`, `e5_multi`, `e5_small`) |
 | `--mrl-dim` | `MRL_DIM` | *(native)* | Output dimension for MRL-supported models (e.g. 64, 128, 256, 512, 1024 for Qwen3). Defaults to the model's native maximum dimension (1024 for Qwen3). |
 | `--batch-size` | `BATCH_SIZE` | `8` | Maximum batch size for embedding inference |
 | `--cache-size` | `CACHE_SIZE` | `1000` | LRU cache capacity for embeddings |
@@ -363,11 +363,11 @@ You can switch the embedding model using the `--model` arg or `EMBEDDING_MODEL` 
 
 | Argument Value | HuggingFace Repo | Dimensions | Size | Use Case |
 | :--- | :--- | :--- | :--- | :--- |
-| `qwen3` | `Qwen/Qwen3-Embedding-0.6B` | 1024 (MRL) | 1.2 GB | **Default**. Top open-source 2026 model, 32K context, MRL support. |
+| `e5_multi` | `intfloat/multilingual-e5-base` | 768 | 1.1 GB | **Default**. Multilingual model, good balance of quality and performance. |
+| `qwen3` | `Qwen/Qwen3-Embedding-0.6B` | 1024 (MRL) | 1.2 GB | Top open-source 2026 model, 32K context, MRL support. |
 | `gemma` | `onnx-community/embeddinggemma-300m-ONNX` | 768 (MRL) | ~195 MB | Lighter alternative with MRL support. (Requires proprietary license agreement) |
 | `bge_m3` | `BAAI/bge-m3` | 1024 | 2.3 GB | State-of-the-art multilingual hybrid retrieval. Heavy. |
 | `nomic` | `nomic-ai/nomic-embed-text-v1.5` | 768 | 1.9 GB | High quality long-context BERT-compatible. |
-| `e5_multi` | `intfloat/multilingual-e5-base` | 768 | 1.1 GB | Legacy; kept for backward compatibility. |
 | `e5_small` | `intfloat/multilingual-e5-small` | 384 | 134 MB | Fastest, minimal RAM. Good for dev/testing. |
 
 ### 📉 Matryoshka Representation Learning (MRL)
@@ -380,7 +380,7 @@ Use the `--mrl-dim` argument to specify the desired size. If omitted, the defaul
 
 ### 🔒 Gated Models & Authentication (Gemma)
 
-By default, the server uses **Qwen3**, which is fully open-source and downloads automatically without any authentication.
+By default, the server uses **e5_multi**, which is fully open-source and downloads automatically without any authentication.
 
 However, if you choose to use **Gemma** (`--model gemma`), you must authenticate because it is a "Gated Model" with a proprietary license. 
 

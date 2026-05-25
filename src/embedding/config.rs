@@ -261,9 +261,9 @@ mod tests {
     }
 
     #[test]
-    fn test_default_is_gemma() {
-        assert_eq!(ModelType::default(), ModelType::Gemma);
-        assert_eq!(EmbeddingConfig::default().model, ModelType::Gemma);
+    fn test_default_is_e5_multi() {
+        assert_eq!(ModelType::default(), ModelType::E5Multi);
+        assert_eq!(EmbeddingConfig::default().model, ModelType::E5Multi);
     }
 
     #[test]

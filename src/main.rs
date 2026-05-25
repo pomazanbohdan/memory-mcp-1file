@@ -36,7 +36,7 @@ struct Cli {
     #[arg(
         long,
         env = "MRL_DIM",
-        help = "MRL output dimension (Qwen3/Gemma only). Defaults to model native dim (1024 for qwen3)"
+        help = "MRL output dimension (Qwen3/Gemma only). Defaults to model native dim (768 for e5_multi, 1024 for qwen3)"
     )]
     mrl_dim: Option<usize>,
 
@@ -92,6 +92,7 @@ fn main() -> anyhow::Result<()> {
 async fn async_main(cli: Cli) -> anyhow::Result<()> {
     if cli.list_models {
         println!("Available models:");
+        println!("  e5_multi  -  768 dim, ~180 MB (default) [MIT] Multilingual, balanced performance");
         println!("  qwen3     - 1024 dim, ~1.2 GB          [Apache 2.0] Top open-source 2026, MRL, 32K ctx");
         println!(
             "  gemma     -  768 dim, ~195 MB           [Gemma license] Lightweight MRL alternative"
@@ -101,9 +102,6 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
         );
         println!(
             "  nomic     -  768 dim, ~270 MB           [Apache 2.0] Long-context BERT-compatible"
-        );
-        println!(
-            "  e5_multi  -  768 dim, ~180 MB (default) [MIT] Legacy; kept for backward compat"
         );
         println!("  e5_small  -  384 dim,  ~85 MB           [MIT] Minimal RAM, dev/testing only");
         println!();

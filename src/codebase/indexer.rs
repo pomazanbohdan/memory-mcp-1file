@@ -1,3 +1,4 @@
+use num_cpus;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -17,9 +18,6 @@ use super::symbol_index::SymbolIndex;
 use crate::embedding::{EmbeddingRequest, EmbeddingTarget};
 use crate::types::code::CodeChunk;
 use crate::types::symbol::{CodeReference, CodeSymbol};
-
-const MAX_CHUNKS_PER_FILE: usize = 50;
-const MAX_CONCURRENT_PARSES: usize = 4;
 
 pub async fn index_project(state: Arc<AppState>, project_path: &Path) -> Result<IndexStatus> {
     let project_id = project_path
@@ -60,12 +58,16 @@ pub async fn index_project(state: Arc<AppState>, project_path: &Path) -> Result<
                 status = existing;
             }
 
-            // Extract last known file if possible
+            // Extract last known file if possible (store file name only to avoid path disclosure)
             if let Some(monitor) = state.progress.get(&project_id).await {
                 if let Ok(cf) = monitor.current_file.read() {
                     if !cf.is_empty() {
-                        status.failed_files.push(cf.clone());
-                        status.error_message = Some(format!("{}: Failed at file {}", e, cf));
+                        let safe_name = Path::new(&*cf)
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or("unknown");
+                        status.failed_files.push(safe_name.to_string());
+                        status.error_message = Some(format!("{}: Failed at file {}", e, safe_name));
                     } else {
                         status.error_message = Some(e.to_string());
                     }
@@ -131,7 +133,7 @@ async fn do_index_project(
     // sequential spawn_blocking. Up to max_concurrent_parses files are parsed on
     // the blocking thread pool simultaneously.
     #[allow(clippy::type_complexity)]
-    let max_concurrent_parses = MAX_CONCURRENT_PARSES;
+    let max_concurrent_parses = std::cmp::max(4, num_cpus::get() / 2);
     #[allow(clippy::type_complexity)]
     let mut parse_set: tokio::task::JoinSet<(
         Vec<CodeChunk>,
@@ -144,20 +146,10 @@ async fn do_index_project(
     // Expands in place so it can mutate surrounding locals and use `.await`.
     macro_rules! drain_one_parse {
         ($join_result:expr) => {{
-            let (mut chunks, symbols, references, fp_str) = $join_result
+            let (chunks, symbols, references, fp_str) = $join_result
                 .map_err(|e| crate::AppError::Internal(
                     format!("parse/chunk panicked: {e}").into(),
                 ))?;
-
-            if chunks.len() > MAX_CHUNKS_PER_FILE {
-                tracing::warn!(
-                    file = %fp_str,
-                    total_chunks = chunks.len(),
-                    kept_chunks = MAX_CHUNKS_PER_FILE,
-                    "Too many chunks in file, truncating",
-                );
-                chunks.truncate(MAX_CHUNKS_PER_FILE);
-            }
 
             for chunk in chunks {
                 chunk_buffer.push(chunk);
@@ -242,9 +234,22 @@ async fn do_index_project(
             relation_buffer.extend(references);
             relation_buffer.extend(containment_refs);
 
-            // Keep references buffered until all symbols are indexed.
-            // This preserves forward references to symbols defined later
-            // in the scan order.
+            // Mid-flight flush: avoid unbounded growth of relation_buffer on
+            // large codebases.  5000 relations ≈ ~2 MB (each CodeReference is
+            // small), so flushing at this threshold keeps peak RSS low.
+            if relation_buffer.len() >= 5000 {
+                let batch = std::mem::take(&mut relation_buffer);
+                let stats = create_symbol_relations(
+                    state.storage.as_ref(),
+                    project_id,
+                    &batch,
+                    &symbol_index,
+                )
+                .await;
+                total_relation_stats.created += stats.created;
+                total_relation_stats.failed += stats.failed;
+                total_relation_stats.unresolved += stats.unresolved;
+            }
 
             status.indexed_files += 1;
             monitor
@@ -271,15 +276,16 @@ async fn do_index_project(
     }
 
     for file_path in &files {
-        // Update current file in monitor for status reporting
+        // Update current file in monitor for status reporting (file name only)
         if let Ok(mut cf) = monitor.current_file.write() {
             *cf = file_path
                 .file_name()
-                .map(|name| name.to_string_lossy().into_owned())
-                .unwrap_or_else(|| "<unknown>".to_string());
+                .and_then(|n| n.to_str())
+                .unwrap_or("unknown")
+                .to_string();
         }
 
-        tracing::info!("Indexing file: {:?}", file_path);
+        tracing::debug!(file = %file_path.display(), "Indexing file");
 
         // Skip auto-generated files (no useful semantic content)
         if crate::codebase::scanner::is_ignored_file(file_path) {
@@ -477,7 +483,7 @@ pub async fn incremental_index(
     }
 
     // Issue 4 fix: Bounded-concurrency parsing via JoinSet (same pattern as do_index_project).
-    let max_concurrent_parses = MAX_CONCURRENT_PARSES;
+    let max_concurrent_parses = std::cmp::max(4, num_cpus::get() / 2);
     // Return type: (chunks, symbols, references, path_str, new_hash)
     type IncrResult = (
         Vec<CodeChunk>,
@@ -575,13 +581,6 @@ pub async fn incremental_index(
 
     for path in changed_paths {
         let path_str = path.to_string_lossy().to_string();
-
-        if crate::codebase::scanner::is_ignored_file(&path)
-            || !crate::codebase::scanner::is_code_file(&path)
-        {
-            tracing::debug!(path = %path_str, "Skipping ignored/non-code file from watcher event");
-            continue;
-        }
 
         if !path.exists() {
             match state

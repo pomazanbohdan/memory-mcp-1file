@@ -24,7 +24,7 @@ struct Cli {
     #[arg(long, env, default_value_os_t = default_data_dir())]
     data_dir: PathBuf,
 
-    #[arg(long, env = "EMBEDDING_MODEL", default_value = "gemma")]
+    #[arg(long, env = "EMBEDDING_MODEL", default_value = "e5_multi")]
     model: String,
 
     #[arg(long, env, default_value = "1000")]
@@ -94,7 +94,7 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
         println!("Available models:");
         println!("  qwen3     - 1024 dim, ~1.2 GB          [Apache 2.0] Top open-source 2026, MRL, 32K ctx");
         println!(
-            "  gemma     -  768 dim, ~195 MB (default) [Gemma license] Lightweight MRL alternative"
+            "  gemma     -  768 dim, ~195 MB           [Gemma license] Lightweight MRL alternative"
         );
         println!(
             "  bge_m3    - 1024 dim, ~420 MB           [MIT] Hybrid dense+sparse+colbert retrieval"
@@ -103,7 +103,7 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
             "  nomic     -  768 dim, ~270 MB           [Apache 2.0] Long-context BERT-compatible"
         );
         println!(
-            "  e5_multi  -  768 dim, ~180 MB           [MIT] Legacy; kept for backward compat"
+            "  e5_multi  -  768 dim, ~180 MB (default) [MIT] Legacy; kept for backward compat"
         );
         println!("  e5_small  -  384 dim,  ~85 MB           [MIT] Minimal RAM, dev/testing only");
         println!();

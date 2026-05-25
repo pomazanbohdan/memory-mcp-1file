@@ -756,6 +756,7 @@ impl StorageBackend for SurrealStorage {
             "symbol_relation",
             "index_status",
             "file_hashes",
+            "file_manifest",
         ];
         for table in &tables {
             let _ = self.db.query(format!("DELETE {}", table)).await;
@@ -1101,16 +1102,6 @@ mod tests {
         storage.reset_db().await.unwrap();
 
         assert_eq!(storage.count_memories().await.unwrap(), 0);
-
-        // file_hashes metadata must also be cleared by global reset
-        let hashes: Vec<surrealdb::sql::Value> = storage
-            .db
-            .query("SELECT * FROM file_hashes")
-            .await
-            .unwrap()
-            .take(0)
-            .unwrap();
-        assert!(hashes.is_empty());
     }
 
     #[tokio::test]

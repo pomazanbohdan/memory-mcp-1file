@@ -93,6 +93,18 @@ impl CodebaseManager {
     /// Returns the number of jobs enqueued.
     pub async fn validate_index_full(&self) -> Result<IncrementalResult> {
         let project_id = &self.project_id;
+        let status = self.state.storage.get_index_status(project_id).await?;
+
+        // If the project has no persisted index status, treat it as not indexed
+        // and skip background validation/re-indexing. This prevents periodic
+        // auto-index from recreating chunks after explicit project deletion.
+        if status.is_none() {
+            debug!(
+                project_id = %project_id,
+                "validate_index_full: skipped (no index status)"
+            );
+            return Ok(IncrementalResult::default());
+        }
 
         // 1. Scan the current directory.
         let project_path = self.project_path.clone();

@@ -17,6 +17,14 @@ use core::f32;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+#[derive(Debug, Clone, Deserialize, PartialEq, Copy, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum HiddenActivation {
+    #[default]
+    Gelu,
+    Silu,
+}
+
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct Config {
     pub vocab_size: usize,
@@ -31,6 +39,8 @@ pub struct Config {
     pub global_rope_theta: f64,
     pub local_attention: usize,
     pub local_rope_theta: f64,
+    #[serde(default)]
+    pub hidden_activation: HiddenActivation,
     #[serde(default)]
     #[serde(flatten)]
     pub classifier_config: Option<ClassifierConfig>,
@@ -152,6 +162,7 @@ impl ModernBertAttention {
 pub struct ModernBertMLP {
     wi: Linear,
     wo: Linear,
+    activation: HiddenActivation,
 }
 
 impl ModernBertMLP {
@@ -162,7 +173,11 @@ impl ModernBertMLP {
             vb.pp("Wi"),
         )?;
         let wo = linear_no_bias(config.intermediate_size, config.hidden_size, vb.pp("Wo"))?;
-        Ok(Self { wi, wo })
+        Ok(Self {
+            wi,
+            wo,
+            activation: config.hidden_activation,
+        })
     }
 }
 
@@ -170,7 +185,11 @@ impl Module for ModernBertMLP {
     fn forward(&self, xs: &Tensor) -> Result<Tensor> {
         let xs = xs.apply(&self.wi)?;
         let xs = xs.chunk(2, D::Minus1)?;
-        let xs = (&xs[0].gelu_erf()? * &xs[1])?.apply(&self.wo)?; // GeGLU
+        let activated = match self.activation {
+            HiddenActivation::Gelu => xs[0].gelu_erf()?,
+            HiddenActivation::Silu => xs[0].silu()?,
+        };
+        let xs = (&activated * &xs[1])?.apply(&self.wo)?; // GLU
         Ok(xs)
     }
 }

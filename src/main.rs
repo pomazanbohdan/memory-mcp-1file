@@ -24,8 +24,8 @@ struct Cli {
     #[arg(long, env, default_value_os_t = default_data_dir())]
     data_dir: PathBuf,
 
-    #[arg(long, env = "EMBEDDING_MODEL", default_value = "e5_multi")]
-    model: String,
+    #[arg(long, env = "EMBEDDING_MODEL", default_value_t = ModelType::default())]
+    model: ModelType,
 
     #[arg(long, env, default_value = "1000")]
     cache_size: usize,
@@ -36,7 +36,7 @@ struct Cli {
     #[arg(
         long,
         env = "MRL_DIM",
-        help = "MRL output dimension (Qwen3/Gemma only). Defaults to model native dim (768 for e5_multi, 1024 for qwen3)"
+        help = "MRL output dimension (Qwen3/Gemma only). Defaults to model native dim (384 for granite, 1024 for qwen3)"
     )]
     mrl_dim: Option<usize>,
 
@@ -92,7 +92,10 @@ fn main() -> anyhow::Result<()> {
 async fn async_main(cli: Cli) -> anyhow::Result<()> {
     if cli.list_models {
         println!("Available models:");
-        println!("  e5_multi  -  768 dim, ~180 MB (default) [MIT] Multilingual, balanced performance");
+        println!(
+            "  granite   -  384 dim, ~195 MB           [Apache 2.0] ModernBERT multilingual and code retrieval [default]"
+        );
+        println!("  e5_multi  -  768 dim, ~180 MB           [MIT] Legacy multilingual, balanced performance");
         println!("  qwen3     - 1024 dim, ~1.2 GB          [Apache 2.0] Top open-source 2026, MRL, 32K ctx");
         println!(
             "  gemma     -  768 dim, ~195 MB           [Gemma license] Lightweight MRL alternative"
@@ -124,7 +127,7 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
         "memory-mcp starting"
     );
 
-    let model: ModelType = cli.model.parse().map_err(|e: String| anyhow::anyhow!(e))?;
+    let model = cli.model;
 
     if model.requires_license_agreement() {
         tracing::warn!(
@@ -173,7 +176,7 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
     let state = Arc::new(AppState {
         config: AppConfig {
             data_dir: cli.data_dir,
-            model: cli.model,
+            model: model.to_string(),
             cache_size: cli.cache_size,
             batch_size: cli.batch_size,
             timeout_ms: cli.timeout,
@@ -291,7 +294,10 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
             tokio::time::sleep(std::time::Duration::from_secs(1)).await;
         }
         if re_embedded > 0 {
-            tracing::info!(count = re_embedded, "Stale memories re-embedded successfully");
+            tracing::info!(
+                count = re_embedded,
+                "Stale memories re-embedded successfully"
+            );
         }
     });
 
@@ -299,22 +305,16 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
 
     // ── Lazy-init architecture ─────────────────────────────────────────────
     // `serve_server` is called immediately after lightweight synchronous setup.
-    // The MCP `initialize` handshake is handled by `get_info()` which is a
-    // pure, synchronous function — it returns in < 1 ms regardless of model
-    // state.  The embedding model continues loading in a background OS thread
-    // (`start_loading` above).
+    // rmcp accepts a modern `server/discover` opener with per-request `_meta`
+    // and retains the legacy `initialize` handshake for older clients.
+    // `get_info()` is pure and synchronous, so either opener returns without
+    // waiting for the embedding model. The model continues loading in the
+    // background OS thread (`start_loading` above).
     //
-    // Tool calls that need embeddings use `ensure_embedding_ready!`, which now
-    // *waits* up to `model_load_timeout_ms` for the model instead of failing
-    // immediately.  This means:
-    //   • Fresh machine (model must download):  tool calls block transparently
-    //     until the download completes; the MCP session stays alive.
-    //   • Warm machine (model cached):  the model is ready in < 5 s; tool
-    //     calls proceed with zero perceptible delay.
-    //
-    // This is the architecturally correct fix for the SIGTERM-on-initialize
-    // bug: the server ALWAYS responds to `initialize` instantly; only the
-    // heavier tool calls experience startup latency, and only once.
+    // Tool calls that need embeddings use `ensure_embedding_ready!`, which
+    // waits up to `model_load_timeout_ms` for the model instead of failing
+    // immediately. This keeps both stateless requests and legacy connections
+    // alive while a fresh machine downloads the model.
     // ──────────────────────────────────────────────────────────────────────
 
     // Auto-start codebase manager if /project exists
@@ -384,6 +384,11 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
 
     let transport = rmcp::transport::io::stdio();
 
+    // Modern MCP clients use `server/discover` plus per-request `_meta`; rmcp
+    // owns that standard route. Legacy clients may still use `initialize`.
+    // There is no application-level MCP session or stored `currentProject`.
+    // `get_info()` remains required by rmcp's `serve_server` service trait.
+
     let service = rmcp::service::serve_server(server, transport).await?;
 
     if cli.idle_timeout > 0 {
@@ -417,10 +422,12 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
     #[cfg(unix)]
     let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
 
-    // MCP stdio lifecycle (spec 2025-03-26 & 2025-11-25):
-    //   - Server runs until client closes stdin (service.waiting() resolves)
-    //   - Server handles SIGINT/SIGTERM for graceful shutdown
-    //   - NO reconnect: stdio is process-level, stdin can't be "reopened"
+    // MCP stdio lifecycle:
+    //   - 2026-07-28 clients may begin with `server/discover` and send
+    //     protocol/client metadata on every request.
+    //   - Legacy 2025-11-25 clients may use initialize/initialized.
+    //   - The process runs until stdin closes or a termination signal arrives.
+    //   - NO reconnect: stdio is process-level, stdin cannot be reopened.
     // NOTE: We intentionally do not enforce an idle timer here because stdio
     // does not provide a reliable request-activity signal at this layer.
     // A fixed sleep-based timeout can terminate healthy long-lived sessions.

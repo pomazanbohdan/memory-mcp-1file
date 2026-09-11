@@ -13,24 +13,53 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  verify:
+    name: Verify release candidate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+
+      - name: Run release tests
+        run: cargo test --release --locked --all-targets
+
   create-release:
+    needs: verify
     runs-on: ubuntu-latest
     outputs:
       upload_url: ${{ steps.create_release.outputs.upload_url }}
     steps:
       - uses: actions/checkout@v4
+      - name: Prepare release description
+        shell: bash
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/v}
+          awk -v heading="## Release v${VERSION}" '
+            index($0, heading) == 1 { found=1; next }
+            found && /^## / { exit }
+            found { print }
+          ' release_notes.md > release-body.md
+          test -s release-body.md
+
       
       - name: Create Release
         id: create_release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v3
         with:
           draft: false
           prerelease: false
           generate_release_notes: true
+          body_path: release-body.md
 
   # 🚀 Critical Path: Build MUSL -> Publish Docker
   build-musl:
     needs: create-release
+    outputs:
+      tarball_sha256: ${{ steps.package.outputs.tarball_sha256 }}
     name: Build Linux MUSL (Docker)
     runs-on: ubuntu-latest
     steps:
@@ -53,15 +82,19 @@ jobs:
           restore-keys: |
             x86_64-unknown-linux-musl-cargo-
 
+      - name: Install cross
+        uses: taiki-e/install-action@v2.69.1
+        with:
+          tool: cross@0.2.5
+
       - name: Build MUSL
         env:
           RUSTFLAGS: "-C target-cpu=x86-64-v3"
-        run: |
-          cargo install cross
-          cross build --release --target x86_64-unknown-linux-musl
+        run: cross build --release --target x86_64-unknown-linux-musl
         shell: bash
 
       - name: Package Artifacts
+        id: package
         shell: bash
         run: |
           VERSION=${GITHUB_REF#refs/tags/v}
@@ -71,12 +104,14 @@ jobs:
           
           echo "Packaging $BIN_PATH to $ASSET_NAME"
           tar -czf "$ASSET_NAME" -C $(dirname "$BIN_PATH") "$BINARY_NAME"
-          sha256sum "$ASSET_NAME" > "$ASSET_NAME.sha256"
+          SHA256=$(sha256sum "$ASSET_NAME" | awk '{print $1}')
+          echo "$SHA256  $ASSET_NAME" > "$ASSET_NAME.sha256"
+          echo "tarball_sha256=$SHA256" >> "$GITHUB_OUTPUT"
 
           echo "ASSET_NAME=$ASSET_NAME" >> $GITHUB_ENV
 
       - name: Upload Release Asset
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v3
         with:
           files: |
             ${{ env.ASSET_NAME }}
@@ -122,6 +157,7 @@ jobs:
           build-args: |
             VERSION=${{ steps.prep.outputs.VERSION }}
             REPO=${{ github.repository }}
+            TARBALL_SHA256=${{ needs.build-musl.outputs.tarball_sha256 }}
 
   # 📦 Secondary Path: Build other binaries
   build-others:
@@ -220,7 +256,7 @@ jobs:
           echo "ASSET_NAME=$ASSET_NAME" >> $GITHUB_ENV
 
       - name: Upload Release Asset
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v3
         with:
           files: |
             ${{ env.ASSET_NAME }}

@@ -46,7 +46,7 @@ mod tests {
             .await
             .unwrap();
         // Should return "indexing" status immediately
-        if let rmcp::model::RawContent::Text(t) = &result.content[0].raw {
+        if let rmcp::model::ContentBlock::Text(t) = &result.content[0] {
             assert!(t.text.contains("indexing"));
         } else {
             panic!("Expected text content");
@@ -65,7 +65,7 @@ mod tests {
             let res = super::get_index_status(&ctx.state, status_params.clone())
                 .await
                 .unwrap();
-            if let rmcp::model::RawContent::Text(t) = &res.content[0].raw {
+            if let rmcp::model::ContentBlock::Text(t) = &res.content[0] {
                 last_status = t.text.clone();
                 // In tests the embedding queue has no receiver so embeddings never
                 // complete; accept either fully-completed or embedding_pending (AST done).
@@ -91,7 +91,7 @@ mod tests {
         };
         let search_res = super::search_code(&ctx.state, search_params).await.unwrap();
 
-        if let rmcp::model::RawContent::Text(t) = &search_res.content[0].raw {
+        if let rmcp::model::ContentBlock::Text(t) = &search_res.content[0] {
             assert!(
                 t.text.contains("main.rs"),
                 "Expected 'main.rs' in search results. Got: {}",

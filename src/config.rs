@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use tokio::sync::{watch, RwLock, Semaphore};
 
-use crate::embedding::{AdaptiveEmbeddingQueue, EmbeddingService, EmbeddingStore};
+use crate::embedding::{AdaptiveEmbeddingQueue, EmbeddingService, EmbeddingStore, ModelType};
 use crate::search::CodeSearchEngine;
 use crate::storage::SurrealStorage;
 
@@ -56,7 +56,7 @@ impl Default for AppConfig {
             data_dir: dirs::data_local_dir()
                 .unwrap_or_else(|| PathBuf::from("."))
                 .join("memory-mcp"),
-            model: "qwen3".to_string(),
+            model: ModelType::default().to_string(),
             cache_size: 1000,
             batch_size: 8,
             timeout_ms: 30000,

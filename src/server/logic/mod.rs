@@ -4,7 +4,7 @@ pub mod memory;
 pub mod search;
 pub mod system;
 
-use rmcp::model::{CallToolResult, Content};
+use rmcp::model::{CallToolResult, ContentBlock};
 use serde_json::json;
 
 use crate::embedding::EmbeddingStatus;
@@ -27,19 +27,19 @@ pub fn normalize_limit(limit: Option<usize>) -> usize {
 
 /// Create error response from any Display type
 pub fn error_response(e: impl std::fmt::Display) -> CallToolResult {
-    CallToolResult::success(vec![Content::text(
+    CallToolResult::success(vec![ContentBlock::text(
         json!({ "error": e.to_string() }).to_string(),
     )])
 }
 
 /// Create success response from JSON value
 pub fn success_json(value: serde_json::Value) -> CallToolResult {
-    CallToolResult::success(vec![Content::text(value.to_string())])
+    CallToolResult::success(vec![ContentBlock::text(value.to_string())])
 }
 
 /// Create success response from serializable value
 pub fn success_serialize<T: serde::Serialize>(value: &T) -> CallToolResult {
-    CallToolResult::success(vec![Content::text(
+    CallToolResult::success(vec![ContentBlock::text(
         serde_json::to_string(value).unwrap_or_default(),
     )])
 }
@@ -99,9 +99,9 @@ pub fn embedding_loading_response(status: &EmbeddingStatus) -> CallToolResult {
                 response["total_mb"] = json!(total);
             }
 
-            CallToolResult::success(vec![Content::text(response.to_string())])
+            CallToolResult::success(vec![ContentBlock::text(response.to_string())])
         }
-        EmbeddingStatus::Error { message } => CallToolResult::success(vec![Content::text(
+        EmbeddingStatus::Error { message } => CallToolResult::success(vec![ContentBlock::text(
             json!({
                 "status": "error",
                 "error": message
@@ -109,7 +109,7 @@ pub fn embedding_loading_response(status: &EmbeddingStatus) -> CallToolResult {
             .to_string(),
         )]),
         EmbeddingStatus::Ready => {
-            CallToolResult::success(vec![Content::text(json!({"status": "ready"}).to_string())])
+            CallToolResult::success(vec![ContentBlock::text(json!({"status": "ready"}).to_string())])
         }
     }
 }

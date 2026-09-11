@@ -3,6 +3,8 @@
 pub enum EngineBackend {
     /// BERT-family encoder (e5, nomic-v1.5, bge-m3).
     Bert,
+    /// ModernBERT encoder (Granite multilingual R2).
+    ModernBert,
     /// Decoder-only Qwen3 backbone with last-token pooling.
     Qwen3,
     /// Gemma3 text encoder.
@@ -16,8 +18,7 @@ pub enum EngineBackend {
 pub enum ModelType {
     /// intfloat/multilingual-e5-small — 384d, ~85 MB Q4. Legacy lightweight option.
     E5Small,
-    /// intfloat/multilingual-e5-base — 768d, ~180 MB. Legacy; kept for backward compat. Default.
-    #[default]
+    /// intfloat/multilingual-e5-base — 768d, ~180 MB. Legacy; kept for backward compat.
     E5Multi,
     /// nomic-ai/nomic-embed-text-v1.5 — 768d, ~270 MB. Long-context BERT-compatible.
     Nomic,
@@ -27,6 +28,9 @@ pub enum ModelType {
     Qwen3,
     /// unsloth/embeddinggemma-300m-qat-q4_0-unquantized — 768d, ~195 MB.
     Gemma,
+    /// ibm-granite/granite-embedding-97m-multilingual-r2 — 384d, ~195 MB BF16. Default.
+    #[default]
+    Granite,
     Mock,
 }
 
@@ -39,6 +43,7 @@ impl ModelType {
             Self::BgeM3 => "BAAI/bge-m3",
             Self::Qwen3 => "Qwen/Qwen3-Embedding-0.6B",
             Self::Gemma => "unsloth/embeddinggemma-300m-qat-q4_0-unquantized",
+            Self::Granite => "ibm-granite/granite-embedding-97m-multilingual-r2",
             Self::Mock => "mock",
         }
     }
@@ -52,6 +57,7 @@ impl ModelType {
             Self::BgeM3 => 1024,
             Self::Qwen3 => 1024,
             Self::Gemma => 768,
+            Self::Granite => 384,
             Self::Mock => 768,
         }
     }
@@ -66,6 +72,7 @@ impl ModelType {
     pub fn engine_backend(&self) -> EngineBackend {
         match self {
             Self::E5Small | Self::E5Multi | Self::Nomic | Self::BgeM3 => EngineBackend::Bert,
+            Self::Granite => EngineBackend::ModernBert,
             Self::Qwen3 => EngineBackend::Qwen3,
             Self::Gemma => EngineBackend::Gemma,
             Self::Mock => EngineBackend::Mock,
@@ -84,6 +91,7 @@ impl ModelType {
             Self::E5Multi => "~180 MB",
             Self::Nomic => "~270 MB",
             Self::Gemma => "~195 MB",
+            Self::Granite => "~195 MB",
             Self::BgeM3 => "~420 MB",
             Self::Qwen3 => "~1.2 GB",
             Self::Mock => "0 MB",
@@ -102,9 +110,10 @@ impl std::str::FromStr for ModelType {
             "bge_m3"   | "bge-m3"                            => Ok(Self::BgeM3),
             "qwen3"    | "qwen-3"                            => Ok(Self::Qwen3),
             "gemma"                                          => Ok(Self::Gemma),
+            "granite" | "granite_97m" | "granite-97m"       => Ok(Self::Granite),
             "mock"                                           => Ok(Self::Mock),
             _ => Err(format!(
-                "Unknown model: '{}'. Valid values: e5_small, e5_multi, nomic, bge_m3, qwen3, gemma",
+                "Unknown model: '{}'. Valid values: e5_small, e5_multi, nomic, bge_m3, qwen3, gemma, granite",
                 s
             )),
         }
@@ -120,6 +129,7 @@ impl std::fmt::Display for ModelType {
             Self::BgeM3 => write!(f, "bge_m3"),
             Self::Qwen3 => write!(f, "qwen3"),
             Self::Gemma => write!(f, "gemma"),
+            Self::Granite => write!(f, "granite"),
             Self::Mock => write!(f, "mock"),
         }
     }
@@ -225,6 +235,11 @@ mod tests {
         assert_eq!(ModelType::from_str("qwen3").unwrap(), ModelType::Qwen3);
         assert_eq!(ModelType::from_str("qwen-3").unwrap(), ModelType::Qwen3);
         assert_eq!(ModelType::from_str("gemma").unwrap(), ModelType::Gemma);
+        assert_eq!(ModelType::from_str("granite").unwrap(), ModelType::Granite);
+        assert_eq!(
+            ModelType::from_str("granite-97m").unwrap(),
+            ModelType::Granite
+        );
         assert!(ModelType::from_str("unknown").is_err());
     }
 
@@ -237,6 +252,8 @@ mod tests {
             ModelType::BgeM3,
             ModelType::Qwen3,
             ModelType::Gemma,
+            ModelType::Granite,
+            ModelType::Mock,
         ] {
             let s = m.to_string();
             assert_eq!(ModelType::from_str(&s).unwrap(), m);
@@ -250,6 +267,7 @@ mod tests {
         assert_eq!(ModelType::BgeM3.base_dimensions(), 1024);
         assert_eq!(ModelType::Qwen3.base_dimensions(), 1024);
         assert_eq!(ModelType::Gemma.base_dimensions(), 768);
+        assert_eq!(ModelType::Granite.base_dimensions(), 384);
     }
 
     #[test]
@@ -258,12 +276,13 @@ mod tests {
         assert!(ModelType::Gemma.supports_mrl());
         assert!(!ModelType::BgeM3.supports_mrl());
         assert!(!ModelType::E5Multi.supports_mrl());
+        assert!(!ModelType::Granite.supports_mrl());
     }
 
     #[test]
-    fn test_default_is_e5_multi() {
-        assert_eq!(ModelType::default(), ModelType::E5Multi);
-        assert_eq!(EmbeddingConfig::default().model, ModelType::E5Multi);
+    fn test_default_is_granite() {
+        assert_eq!(ModelType::default(), ModelType::Granite);
+        assert_eq!(EmbeddingConfig::default().model, ModelType::Granite);
     }
 
     #[test]
@@ -276,7 +295,7 @@ mod tests {
         assert_eq!(cfg.output_dim(), 512);
 
         let cfg2 = EmbeddingConfig::default();
-        assert_eq!(cfg2.output_dim(), 768);
+        assert_eq!(cfg2.output_dim(), 384);
     }
 
     #[test]
@@ -323,7 +342,7 @@ mod tests {
     #[test]
     fn test_default_config() {
         let config = EmbeddingConfig::default();
-        assert_eq!(config.model, ModelType::Gemma);
+        assert_eq!(config.model, ModelType::Granite);
         assert_eq!(config.cache_size, 1000);
         assert!(config.mrl_dim.is_none());
     }

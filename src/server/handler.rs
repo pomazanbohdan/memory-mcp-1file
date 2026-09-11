@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::sync::Arc;
 
 use rmcp::{
@@ -8,6 +9,8 @@ use rmcp::{
     service::{RequestContext, RoleServer},
     tool, tool_router,
 };
+
+use serde_json::{json, Value};
 
 use crate::config::AppState;
 use crate::server::logic;
@@ -26,6 +29,54 @@ fn to_rpc_error(e: anyhow::Error) -> ErrorData {
         message: e.to_string().into(),
         data: None,
     }
+}
+
+const SUPPORTED_PROTOCOL_VERSIONS: &[&str] = &["2026-07-28", "2025-11-25"];
+
+/// Validate the negotiated protocol version carried in a request's `_meta`.
+///
+/// Absent `_meta` is treated as a legacy client and accepted (backward
+/// compatible). An unrecognized version is rejected so the server never
+/// proceeds against a protocol it does not implement.
+fn validate_protocol_version(context: &RequestContext<RoleServer>) -> Result<(), ErrorData> {
+    let Some(raw) = context.meta.get("io.modelcontextprotocol/protocolVersion") else {
+        return Ok(());
+    };
+    let Some(version) = raw.as_str() else {
+        return Err(ErrorData::invalid_params(
+            "protocolVersion must be a string",
+            None,
+        ));
+    };
+    if SUPPORTED_PROTOCOL_VERSIONS.contains(&version) {
+        Ok(())
+    } else {
+        Err(ErrorData::new(
+            ErrorCode(-32022), // UnsupportedProtocolVersionError (MCP 2026-07-28)
+            format!("Unsupported protocol version: {version}"),
+            None,
+        ))
+    }
+}
+
+/// Build the `server/discover` result body from the server's own implementation
+/// info so name/version/description stay in sync with `get_info`.
+#[allow(dead_code)]
+fn build_server_discover_result(server_info: &Implementation) -> Value {
+    json!({
+        "resultType": "complete",
+        "supportedVersions": SUPPORTED_PROTOCOL_VERSIONS,
+        "capabilities": {
+            "tools": {
+                "listChanged": true
+            }
+        },
+        "ttlMs": 0,
+        "cacheScope": "private",
+        "_meta": {
+            "io.modelcontextprotocol/serverInfo": server_info,
+        },
+    })
 }
 
 #[tool_router]
@@ -355,7 +406,9 @@ impl MemoryMcpServer {
             .map_err(to_rpc_error)
     }
 
-    #[tool(description = "Show all available tools with usage examples and parameter combinations.")]
+    #[tool(
+        description = "Show all available tools with usage examples and parameter combinations."
+    )]
     async fn how_to_use(
         &self,
         _params: Parameters<HowToUseParams>,
@@ -430,33 +483,22 @@ impl MemoryMcpServer {
         ]
         .join("\n");
 
-        Ok(CallToolResult::success(vec![Content::text(text)]))
+        Ok(CallToolResult::success(vec![ContentBlock::text(text)]))
     }
 }
 
 impl ServerHandler for MemoryMcpServer {
     fn get_info(&self) -> InitializeResult {
-        InitializeResult {
-            protocol_version: ProtocolVersion::default(),
-            capabilities: ServerCapabilities {
-                tools: Some(ToolsCapability {
-                    list_changed: Some(false),
-                }),
-                ..ServerCapabilities::default()
-            },
-            server_info: Implementation {
-                name: "memory-mcp".into(),
-                version: env!("CARGO_PKG_VERSION").into(),
-                description: None,
-                title: None,
-                icons: None,
-                website_url: None,
-            },
-            instructions: Some(
-                "AI agent memory server with semantic search, knowledge graph, and code search."
-                    .into(),
-            ),
-        }
+        InitializeResult::new(
+            ServerCapabilities::builder()
+                .enable_tools()
+                .enable_tool_list_changed()
+                .build(),
+        )
+        .with_server_info(Implementation::new("memory-mcp", env!("CARGO_PKG_VERSION")))
+        .with_instructions(
+            "AI agent memory server with semantic search, knowledge graph, and code search.",
+        )
     }
 
     async fn list_tools(
@@ -471,9 +513,30 @@ impl ServerHandler for MemoryMcpServer {
         &self,
         request: CallToolRequestParams,
         context: RequestContext<RoleServer>,
-    ) -> Result<CallToolResult, ErrorData> {
+    ) -> Result<CallToolResponse, ErrorData> {
+        // Identity + protocol version come from this request's `_meta`, not a
+        // stored initialize session, so validate + log before moving `context`.
+        validate_protocol_version(&context)?;
+
+        if let Some(client) = context
+            .meta
+            .get("io.modelcontextprotocol/clientInfo")
+            .and_then(Value::as_object)
+            .and_then(|o| o.get("name"))
+            .and_then(Value::as_str)
+        {
+            tracing::info!(client = %client, "incoming tool call (per-request identity from _meta)");
+        }
+
         let tool_context = ToolCallContext::new(self, request, context);
         self.tool_router.call(tool_context).await
+    }
+
+    fn supported_protocol_versions(&self) -> Cow<'static, [ProtocolVersion]> {
+        Cow::Owned(vec![
+            ProtocolVersion::V_2026_07_28,
+            ProtocolVersion::V_2025_11_25,
+        ])
     }
 }
 
@@ -487,13 +550,34 @@ mod tests {
         let ctx = TestContext::new().await;
         let server = MemoryMcpServer::new(ctx.state.clone());
 
-        // 1. Get Info
+        // get_info advertises the tools.list_changed capability.
         let info = server.get_info();
         assert_eq!(info.server_info.name, "memory-mcp");
+        assert_eq!(
+            info.capabilities.tools.and_then(|t| t.list_changed),
+            Some(true),
+            "server must advertise tools.list_changed"
+        );
 
-        // 2. Integration check pass
-        // We cannot easily mock RequestContext without more deps,
-        // but since logic tests cover actual execution,
-        // and compilation proves traits are implemented, this is sufficient.
+        // server/discover carries server identity in response `_meta`, as
+        // required by rmcp's DiscoverResult wire format.
+        let discover = build_server_discover_result(&info.server_info);
+        assert_eq!(
+            discover["_meta"]["io.modelcontextprotocol/serverInfo"]["name"].as_str(),
+            Some("memory-mcp"),
+            "serverInfo.name mirrors get_info"
+        );
+        assert_eq!(
+            discover["resultType"].as_str(),
+            Some("complete"),
+            "server/discover returns a complete result"
+        );
+        assert!(
+            discover["supportedVersions"]
+                .as_array()
+                .expect("supportedVersions is an array")
+                .contains(&json!("2026-07-28")),
+            "server/discover advertises the supported protocol versions"
+        );
     }
 }

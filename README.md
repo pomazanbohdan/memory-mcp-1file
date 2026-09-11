@@ -61,6 +61,26 @@ graph TD
 > **[Click here for the Detailed Architecture Documentation](./ARCHITECTURE.md)**
 
 ---
+## MCP Protocol & Transports
+
+The server uses `rmcp` 3.2 and supports both protocol lifecycles:
+
+* **MCP 2026-07-28 stateless requests:** clients may begin with
+  `server/discover`; every request carries the protocol version and client
+  metadata in `_meta`. The process stores no MCP session, `Mcp-Session-Id`, or
+  mutable `currentProject`.
+* **MCP 2025-11-25 compatibility:** clients using the legacy
+  `initialize`/`initialized` lifecycle remain supported.
+
+This binary exposes MCP over **stdio**. Run one process per local workspace and
+mount that workspace at `/project` when using Docker. Streamable HTTP is not
+enabled or advertised by this release, so it introduces no HTTP session
+management or shared-server authentication surface. Code indexing receives an
+explicit path through `index_project`; code search can be narrowed with
+`project_id` when one process contains multiple indexed projects. Roots
+negotiation is not used.
+
+---
 
 ## 🤖 Agent Integration (System Prompt)
 
@@ -284,7 +304,7 @@ Or with Docker:
 
 ## ✨ Key Features
 
-- **Semantic Memory**: Stores text with vector embeddings (`qwen3` by default) for "vibe-based" retrieval.
+- **Semantic Memory**: Stores text with vector embeddings (`granite` by default) for "vibe-based" retrieval.
 - **Graph Memory**: Tracks entities (`User`, `Project`, `Tech`) and their relations (`uses`, `likes`). Supports PageRank-based traversal.
 - **Code Intelligence**: Indexes local project directories (AST-based chunking) for Rust, Python, TypeScript, JavaScript, Go, Java, and **Dart/Flutter**. Tracks **calls, imports, extends, implements, and mixin** relationships between symbols.
 - **Temporal Validity**: Memories can have `valid_from` and `valid_until` dates.
@@ -343,8 +363,8 @@ Environment variables or CLI args:
 | Arg | Env | Default | Description |
 |-----|-----|---------|-------------|
 | `--data-dir` | `DATA_DIR` | `./data` | DB location |
-| `--model` | `EMBEDDING_MODEL` | `e5_multi` | Embedding model (`qwen3`, `gemma`, `bge_m3`, `nomic`, `e5_multi`, `e5_small`) |
-| `--mrl-dim` | `MRL_DIM` | *(native)* | Output dimension for MRL-supported models (e.g. 64, 128, 256, 512, 1024 for Qwen3). Defaults to the model's native maximum dimension (1024 for Qwen3). |
+| `--model` | `EMBEDDING_MODEL` | `granite` | Embedding model (`granite`, `e5_multi`, `qwen3`, `gemma`, `bge_m3`, `nomic`, `e5_small`) |
+| `--mrl-dim` | `MRL_DIM` | *(native)* | Output dimension for MRL-supported models (e.g. 64, 128, 256, 512, 1024 for Qwen3). Defaults to the model's native maximum dimension (384 for Granite, 1024 for Qwen3). |
 | `--batch-size` | `BATCH_SIZE` | `8` | Maximum batch size for embedding inference |
 | `--cache-size` | `CACHE_SIZE` | `1000` | LRU cache capacity for embeddings |
 | `--timeout` | `TIMEOUT_MS` | `30000` | Timeout in milliseconds |
@@ -361,14 +381,20 @@ Environment variables or CLI args:
 
 You can switch the embedding model using the `--model` arg or `EMBEDDING_MODEL` env var.
 
+When neither option is provided, the binary uses Granite. Configuration precedence is:
+explicit `--model` argument, then `EMBEDDING_MODEL`, then the built-in Granite default.
+
 | Argument Value | HuggingFace Repo | Dimensions | Size | Use Case |
 | :--- | :--- | :--- | :--- | :--- |
-| `e5_multi` | `intfloat/multilingual-e5-base` | 768 | 1.1 GB | **Default**. Multilingual model, good balance of quality and performance. |
+| `granite` | `ibm-granite/granite-embedding-97m-multilingual-r2` | 384 | ~195 MB | **Default**. Multilingual and code retrieval with ModernBERT and CLS pooling. |
+| `e5_multi` | `intfloat/multilingual-e5-base` | 768 | 1.1 GB | Legacy multilingual model, good balance of quality and performance. |
 | `qwen3` | `Qwen/Qwen3-Embedding-0.6B` | 1024 (MRL) | 1.2 GB | Top open-source 2026 model, 32K context, MRL support. |
 | `gemma` | `onnx-community/embeddinggemma-300m-ONNX` | 768 (MRL) | ~195 MB | Lighter alternative with MRL support. (Requires proprietary license agreement) |
 | `bge_m3` | `BAAI/bge-m3` | 1024 | 2.3 GB | State-of-the-art multilingual hybrid retrieval. Heavy. |
 | `nomic` | `nomic-ai/nomic-embed-text-v1.5` | 768 | 1.9 GB | High quality long-context BERT-compatible. |
 | `e5_small` | `intfloat/multilingual-e5-small` | 384 | 134 MB | Fastest, minimal RAM. Good for dev/testing. |
+
+`granite` produces native 384-dimensional, L2-normalized CLS embeddings. The current Candle CPU path caps inputs at 512 tokens to bound the quadratic attention memory cost; the model itself supports up to 32K tokens.
 
 ### 📉 Matryoshka Representation Learning (MRL)
 
@@ -380,7 +406,7 @@ Use the `--mrl-dim` argument to specify the desired size. If omitted, the defaul
 
 ### 🔒 Gated Models & Authentication (Gemma)
 
-By default, the server uses **e5_multi**, which is fully open-source and downloads automatically without any authentication.
+By default, the server uses **Granite**, an Apache 2.0 model that downloads automatically without any authentication.
 
 However, if you choose to use **Gemma** (`--model gemma`), you must authenticate because it is a "Gated Model" with a proprietary license. 
 
@@ -400,10 +426,11 @@ HF_TOKEN="hf_your_token_here" memory-mcp --model gemma
 > [!WARNING]
 > **Changing Models & Data Compatibility**
 >
-> If you switch to a model with different dimensions (e.g., from `e5_small` to `e5_multi`), **your existing database will be incompatible**.
-> You must delete the data directory (volume) and re-index your data.
+> Fresh installations use `granite` (384 dimensions) by default. Existing data directories created with `e5_multi` (768 dimensions) remain usable only when starting explicitly with `--model e5_multi`.
 >
-> Switching between models with the same dimensions (e.g., `e5_multi` <-> `nomic`) is theoretically possible but not recommended as semantic spaces differ.
+> Switching to a model with different dimensions requires a new data directory (or wiped volume) and a full re-index.
+>
+> Even switching between models with the same dimensions (e.g., `e5_multi` <-> `nomic`) is not recommended because their semantic spaces differ.
 
 ## 🔮 Future Roadmap (Research & Ideas)
 
@@ -423,10 +450,10 @@ Based on analysis of advanced memory systems like [Hindsight](https://hindsight.
     *   Allow the agent to prioritize "working memory" over "historical archives" dynamically.
 
 ### 3. Namespaced Memory Banks
-*   **Problem:** Running one docker container per project is resource-heavy.
-*   **Solution:** Add support for `namespace` or `project_id` scoping.
-    *   Allows a single server instance to host isolated "Memory Banks" for different projects or agent personas.
-    *   Enables "Switching Context" without restarting the container.
+*   **Current boundary:** Code indexes already support explicit `project_id`
+    filtering, while memory records remain process-wide.
+*   **Future work:** Extend namespace/project scoping to memory and graph
+    operations so one shared server can isolate multiple agent workspaces.
 
 ### 4. Epistemic Confidence Scoring
 *   **Problem:** The agent treats a guess the same as a verified fact.

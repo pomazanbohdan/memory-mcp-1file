@@ -9,13 +9,15 @@ use crate::storage::StorageBackend;
 use crate::types::IndexState;
 
 const POLL_INTERVAL_SECS: u64 = 10;
+const INDEXING_STALL_TIMEOUT_SECS: u64 = 18_000;
+const INDEXING_STALL_TICKS: u64 = INDEXING_STALL_TIMEOUT_SECS / POLL_INTERVAL_SECS;
 
 /// Runs the completion monitor loop until `shutdown_rx` receives `true`.
 pub async fn run_completion_monitor(state: Arc<AppState>, mut shutdown_rx: watch::Receiver<bool>) {
     let mut interval = tokio::time::interval(Duration::from_secs(POLL_INTERVAL_SECS));
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
-    let mut progress_map: HashMap<String, (u32, u32, u8)> = HashMap::new();
+    let mut progress_map: HashMap<String, (u32, u32, u64)> = HashMap::new();
 
     loop {
         tokio::select! {
@@ -52,14 +54,14 @@ pub async fn run_completion_monitor(state: Arc<AppState>, mut shutdown_rx: watch
 async fn check_and_complete_project(
     state: &Arc<AppState>,
     project_id: &str,
-    progress_map: &mut HashMap<String, (u32, u32, u8)>,
+    progress_map: &mut HashMap<String, (u32, u32, u64)>,
 ) -> crate::Result<()> {
     let status = match state.storage.get_index_status(project_id).await? {
         Some(s) => s,
         None => return Ok(()),
     };
 
-    // Detect stale Indexing: if no file progress for 300s, mark Failed
+    // Detect stale Indexing: if no file progress for INDEXING_STALL_TIMEOUT_SECS
     if status.status == IndexState::Indexing {
         let key = format!("idx:{}", project_id);
         let entry = progress_map
@@ -67,22 +69,22 @@ async fn check_and_complete_project(
             .or_insert((status.indexed_files, 0, 0));
         if entry.0 == status.indexed_files {
             entry.2 += 1;
-            if entry.2 >= 180 {
-                // 180 ticks × 10s = 1800s (30 min) with no progress
-                // Qwen3 on CPU: ~20s/batch of 8, queue throttle can block indexer
+            if entry.2 >= INDEXING_STALL_TICKS {
+                // INDEXING_STALL_TICKS × POLL_INTERVAL_SECS = 18000s (5h) with no progress
                 tracing::warn!(
                     project_id = %project_id,
                     indexed = status.indexed_files,
                     total = status.total_files,
                     stall_ticks = entry.2,
-                    "Indexing stuck for 1800s, marking as failed"
+                    "Indexing stuck for {}s, marking as failed",
+                    INDEXING_STALL_TIMEOUT_SECS
                 );
                 progress_map.remove(&key);
                 let mut updated_status = status.clone();
                 updated_status.status = IndexState::Failed;
                 updated_status.error_message = Some(format!(
-                    "Indexing stalled at {}/{} files for >1800s",
-                    status.indexed_files, status.total_files
+                    "Indexing stalled at {}/{} files for >{}s",
+                    status.indexed_files, status.total_files, INDEXING_STALL_TIMEOUT_SECS
                 ));
                 state.storage.update_index_status(updated_status).await?;
             }
@@ -146,8 +148,7 @@ async fn check_and_complete_project(
                     );
                 }
             } else if entry.2 > 0 && entry.2.is_multiple_of(6) {
-                // Log every 60s while waiting.
-                // Cast to wider integer to avoid u8 overflow in stall_secs.
+                // Convert poll ticks back to seconds for readable progress logs.
                 let chunk_pct = if total_chunks > 0 {
                     (embedded_chunks as f64 / total_chunks as f64 * 100.0) as u32
                 } else {
@@ -166,7 +167,7 @@ async fn check_and_complete_project(
                     embedded_symbols,
                     total_symbols,
                     symbol_pct,
-                    stall_secs = u32::from(entry.2) * 10,
+                    stall_secs = entry.2 * POLL_INTERVAL_SECS,
                     "Embedding in progress, waiting for next batch..."
                 );
             }

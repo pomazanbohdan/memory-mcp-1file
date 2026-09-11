@@ -67,7 +67,7 @@ pub trait StorageBackend: Send + Sync {
     /// Full-text BM25 search on memories
     async fn bm25_search(&self, query: &str, limit: usize) -> Result<Vec<SearchResult>>;
 
-    /// Full-text BM25 search on code chunks
+    /// Text relevance search on code chunks
     async fn bm25_search_code(
         &self,
         query: &str,

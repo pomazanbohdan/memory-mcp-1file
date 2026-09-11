@@ -27,7 +27,7 @@ ENV MALLOC_ARENA_MAX=2
 # Let candle/rayon use all available cores for GEMM during inference
 ENV RAYON_NUM_THREADS=0
 # SurrealKV auto-sets block cache to (total_memory/2 - 1GB) which is 2GB at --memory 6g.
-# Cap at 256MB to leave room for embedding model (1.2GB) + HNSW indexes + BM25.
+# Cap at 256MB to leave room for default Granite embeddings (~195MB) + HNSW indexes + BM25.
 ENV SURREAL_SURREALKV_BLOCK_CACHE_CAPACITY=268435456
 
 # Persist data and allow project mounting

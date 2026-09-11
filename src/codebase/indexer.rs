@@ -12,7 +12,7 @@ use crate::Result;
 use super::chunker::chunk_file;
 use super::parser::CodeParser;
 use super::relations::{create_symbol_relations, detect_containment_references, RelationStats};
-use super::scanner::scan_directory;
+use super::scanner::{is_ignored_file_under_root, scan_directory};
 use super::symbol_index::SymbolIndex;
 
 use crate::embedding::{EmbeddingRequest, EmbeddingTarget};
@@ -288,7 +288,7 @@ async fn do_index_project(
         tracing::debug!(file = %file_path.display(), "Indexing file");
 
         // Skip auto-generated files (no useful semantic content)
-        if crate::codebase::scanner::is_ignored_file(file_path) {
+        if is_ignored_file_under_root(file_path, project_path) {
             tracing::debug!(path = ?file_path, "Skipping generated file");
             status.indexed_files += 1;
             continue;
@@ -698,6 +698,13 @@ mod tests {
 
         assert_eq!(status.total_files, 150);
         assert_eq!(status.total_chunks, 150);
+        let paged = ctx
+            .state
+            .storage
+            .get_chunks_paginated("test_project", 200, 0)
+            .await
+            .unwrap();
+        assert_eq!(paged.len(), 150);
 
         // Use in-memory BM25 engine (rebuilt automatically after indexing)
         let chunks = ctx

@@ -133,7 +133,7 @@ pub(super) async fn get_chunks_paginated(
         .bind(("limit", limit))
         .bind(("offset", offset))
         .await?;
-    let chunks: Vec<CodeChunk> = response.take(0).unwrap_or_default();
+    let chunks: Vec<CodeChunk> = response.take(0)?;
     Ok(chunks)
 }
 
@@ -336,13 +336,29 @@ pub(super) async fn bm25_search_code(
     project_id: Option<&str>,
     limit: usize,
 ) -> Result<Vec<ScoredCodeChunk>> {
-    // SurrealDB v3.0.0: search::score() is broken (bug #6852/#6946).
-    // Use FULLTEXT operator so SurrealDB can use BM25 index;
-    // scoring is still done in Rust because search::score() is broken.
-    // The project_id IS NONE pattern works: SurrealDB Rust SDK maps
-    // Rust's Option::None to SurrealDB NONE (not NULL).
+    // The code full-text index is intentionally not defined in schema.surql:
+    // older databases fail while opening it. Use a bounded case-insensitive
+    // substring fallback here and keep relevance scoring in Rust.
+    let bounded_query: String = query.chars().take(4096).collect();
+    let terms: Vec<String> = bounded_query
+        .split_whitespace()
+        .filter(|term| term.len() >= 2)
+        .take(64)
+        .map(str::to_lowercase)
+        .collect();
+    if terms.is_empty() {
+        return Ok(vec![]);
+    }
+
+    let conditions: Vec<String> = terms
+        .iter()
+        .enumerate()
+        .map(|(i, _)| format!("string::lowercase(content) CONTAINS $q{i}"))
+        .collect();
+    let where_clause = conditions.join(" AND ");
     let fetch_limit = (limit * 3).max(limit);
-    let sql = r#"
+    let sql = format!(
+        r#"
         SELECT
             meta::id(id) AS id,
             file_path,
@@ -355,24 +371,32 @@ pub(super) async fn bm25_search_code(
             context_path,
             1.0f AS score
         FROM code_chunks
-        WHERE content @0@ $query
+        WHERE {where_clause}
           AND ($project_id IS NONE OR project_id = $project_id)
         LIMIT $limit
-    "#;
-    let mut response = db
-        .query(sql)
-        .bind(("query", query.to_string()))
+    "#
+    );
+    let mut query_builder = db.query(&sql);
+    for (i, term) in terms.iter().enumerate() {
+        query_builder = query_builder.bind((format!("q{i}"), term.clone()));
+    }
+    let mut response = query_builder
         .bind(("project_id", project_id.map(String::from)))
         .bind(("limit", fetch_limit))
         .await?;
     let mut results: Vec<ScoredCodeChunk> = response.take(0)?;
 
-    // Compute relevance score in Rust: normalized term frequency.
-    let query_lower = query.to_lowercase();
+    let query_lower = bounded_query.to_lowercase();
+    let query_terms: Vec<&str> = query_lower
+        .split_whitespace()
+        .collect();
     for r in &mut results {
         let content_lower = r.content.to_lowercase();
-        let count = content_lower.matches(query_lower.as_str()).count() as f32;
-        let tf = count / (content_lower.len() as f32 + 1.0) * 1000.0;
+        let mut total_tf = 0.0f32;
+        for term in &query_terms {
+            total_tf += content_lower.matches(term).count() as f32;
+        }
+        let tf = total_tf / (content_lower.len() as f32 + 1.0) * 1000.0;
         r.score = tf.clamp(0.01, 1.0);
     }
 

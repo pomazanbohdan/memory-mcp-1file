@@ -1,3 +1,37 @@
+## Unreleased
+
+No changes recorded.
+
+## Release v0.9.0: MCP Protocol, Runtime & Granite
+
+This release updates MCP lifecycle handling, the embedding runtime, and code-search
+stability for production clients.
+
+### What's New:
+* **Stateless MCP 2026-07-28:** Modern clients can start with the standard
+  `server/discover` request and send protocol/client metadata in each request's
+  `_meta`. The server keeps no MCP session, `Mcp-Session-Id`, or mutable
+  `currentProject` state.
+* **Legacy compatibility:** The 2025-11-25 `initialize`/`initialized` flow remains
+  supported for existing clients.
+* **Transport contour:** This binary exposes MCP over stdio for one local
+  workspace per process. Streamable HTTP is not enabled or advertised by this
+  release; no HTTP session state is introduced.
+* **Workspace context:** `index_project` accepts an explicit path, and code
+  retrieval/search tools accept `project_id` filters when a process indexes more
+  than one project. Roots negotiation is not used.
+* **Embedding runtime:** Updated Candle Transformers to 0.11. Fresh installations
+  use Granite as the default 384-dimensional model; existing `e5_multi` data
+  remains available with explicit model selection.
+* **Granite embeddings:** Added
+  `ibm-granite/granite-embedding-97m-multilingual-r2` with Candle ModernBERT
+  inference, SiLU activation, CLS pooling, and 384-dimensional Apache 2.0
+  embeddings.
+* **Code-search stability:** Storage text search no longer depends on the legacy
+  code full-text index that could prevent existing databases from opening.
+
+---
+
 ## Release v0.8.2: Security Hardening & Model Updates 🔒
 
 This release focuses on critical security fixes and model configuration updates.

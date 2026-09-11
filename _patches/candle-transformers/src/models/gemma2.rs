@@ -447,9 +447,10 @@ impl Model {
         Ok(logits)
     }
 
-    /// Forward pass returning normalized hidden states (for embedding extraction).
-    /// Returns shape `[batch, seq_len, hidden_size]` — all tokens, after final
-    /// RmsNorm, **without** the `lm_head` projection.
+    /// Return hidden states `[b, seq_len, hidden_size]` (final transformer
+    /// layer output, after the output norm). Used for sentence embeddings /
+    /// mean-pooling. Mirrors qwen3's patched forward (which also returns
+    /// post-norm hidden states instead of lm_head logits).
     pub fn forward_embeds(&mut self, input_ids: &Tensor, seqlen_offset: usize) -> Result<Tensor> {
         let (b_size, seq_len) = input_ids.dims2()?;
         let attention_mask = if seq_len <= 1 {
@@ -463,7 +464,7 @@ impl Model {
         for layer in self.layers.iter_mut() {
             xs = layer.forward(&xs, attention_mask.as_ref(), seqlen_offset)?
         }
-        xs.apply(&self.norm)
+        Ok(xs.apply(&self.norm)?)
     }
 
     pub fn clear_kv_cache(&mut self) {

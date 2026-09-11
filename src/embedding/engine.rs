@@ -1,10 +1,13 @@
 use std::path::Path;
 
 use anyhow::{anyhow, Result};
-use candle_core::{DType, Device, Tensor};
+use candle_core::{DType, Device, IndexOp, Tensor};
 use candle_nn::VarBuilder;
 use candle_transformers::models::bert::{BertModel, Config as BertConfig};
 use candle_transformers::models::gemma2::{Config as Gemma2Config, Model as Gemma2Model};
+use candle_transformers::models::modernbert::{
+    Config as ModernBertConfig, ModernBert as ModernBertModel,
+};
 use candle_transformers::models::qwen3::{Config as Qwen3Config, Model as Qwen3Model};
 use hf_hub::api::sync::Api;
 use tokenizers::Tokenizer;
@@ -12,12 +15,16 @@ use tokenizers::Tokenizer;
 /// Maximum token sequence length for BERT models.
 /// Attention is O(n²) — exceeding this causes massive memory usage.
 const MAX_SEQ_LEN_BERT: usize = 512;
+/// Granite advertises 32K context, but full attention at that length is not
+/// practical for this CPU backend. Keep the operational cap explicit.
+const MAX_SEQ_LEN_MODERN_BERT: usize = 512;
 const MAX_SEQ_LEN_QWEN3: usize = 256; // MRL capable Qwen3; most code chunks < 256 tokens
 
 use super::config::{EmbeddingConfig, EngineBackend};
 
 enum InnerModel {
     Bert(BertModel),
+    ModernBert(ModernBertModel),
     Qwen3(std::sync::Mutex<Qwen3Model>),
     Gemma(std::sync::Mutex<Gemma2Model>),
     Mock,
@@ -101,6 +108,20 @@ impl EmbeddingEngine {
                 let dim = bert_cfg.hidden_size;
                 (InnerModel::Bert(BertModel::load(vb, &bert_cfg)?), dim)
             }
+            EngineBackend::ModernBert => {
+                let modernbert_cfg: ModernBertConfig =
+                    serde_json::from_slice(&std::fs::read(config_path)?)?;
+                let dim = modernbert_cfg.hidden_size;
+                // The Granite safetensors use unprefixed keys (e.g.
+                // `embeddings.norm.weight`), while Candle's ModernBERT
+                // loader follows the Transformers `model.*` namespace.
+                let vb_fixed = vb
+                    .rename_f(|name: &str| name.strip_prefix("model.").unwrap_or(name).to_string());
+                (
+                    InnerModel::ModernBert(ModernBertModel::load(vb_fixed, &modernbert_cfg)?),
+                    dim,
+                )
+            }
             EngineBackend::Qwen3 => {
                 let qwen_cfg: Qwen3Config = serde_json::from_slice(&std::fs::read(config_path)?)?;
                 let dim = qwen_cfg.hidden_size;
@@ -175,14 +196,17 @@ impl EmbeddingEngine {
                     .map_err(|e| anyhow!("Tokenization failed: {}", e))?;
 
                 let mut token_ids = tokens.get_ids().to_vec();
+                let mut attention_mask = tokens.get_attention_mask().to_vec();
                 let max_len = match self.inner {
                     InnerModel::Qwen3(_) => MAX_SEQ_LEN_QWEN3,
                     InnerModel::Gemma(_) => 512,
+                    InnerModel::ModernBert(_) => MAX_SEQ_LEN_MODERN_BERT,
                     _ => MAX_SEQ_LEN_BERT,
                 };
 
                 if token_ids.len() > max_len {
                     token_ids.truncate(max_len);
+                    attention_mask.truncate(max_len);
                 }
                 if token_ids.is_empty() {
                     anyhow::bail!("Cannot embed empty token sequence");
@@ -201,6 +225,15 @@ impl EmbeddingEngine {
 
                         let normalized = l2_normalize(&mean_pooled)?;
 
+                        let vec = normalized.squeeze(0)?.to_vec1::<f32>()?;
+                        self.apply_mrl(vec)
+                    }
+                    InnerModel::ModernBert(model) => {
+                        let input_ids = Tensor::new(vec![token_ids.clone()], &self.device)?;
+                        let attention_mask = Tensor::new(vec![attention_mask], &self.device)?;
+                        let hidden = model.forward(&input_ids, &attention_mask)?;
+                        let cls = hidden.i((.., 0, ..))?;
+                        let normalized = l2_normalize(&cls)?;
                         let vec = normalized.squeeze(0)?.to_vec1::<f32>()?;
                         self.apply_mrl(vec)
                     }
@@ -329,27 +362,48 @@ impl EmbeddingEngine {
                 let max_len = match self.inner {
                     InnerModel::Qwen3(_) => MAX_SEQ_LEN_QWEN3,
                     InnerModel::Gemma(_) => 512,
+                    InnerModel::ModernBert(_) => MAX_SEQ_LEN_MODERN_BERT,
                     _ => MAX_SEQ_LEN_BERT,
                 };
 
-                let unpadded_token_ids: Vec<Vec<u32>> = encodes
+                let token_data: Vec<(Vec<u32>, Vec<u32>)> = encodes
                     .into_iter()
                     .map(|enc| {
                         let mut ids = enc.get_ids().to_vec();
+                        let mut mask = enc.get_attention_mask().to_vec();
                         if ids.len() > max_len {
                             ids.truncate(max_len);
+                            mask.truncate(max_len);
                         }
-                        ids
+                        // `encode_batch` may have already padded to the batch
+                        // longest length. Remove only trailing padding here;
+                        // the mask remains the source of truth for validity.
+                        let valid_len = mask
+                            .iter()
+                            .rposition(|&value| value != 0)
+                            .map_or(0, |index| index + 1);
+                        ids.truncate(valid_len);
+                        mask.truncate(valid_len);
+                        (ids, mask)
                     })
                     .collect();
 
-                let actual_lengths: Vec<usize> =
-                    unpadded_token_ids.iter().map(|ids| ids.len()).collect();
+                let unpadded_token_ids: Vec<Vec<u32>> =
+                    token_data.iter().map(|(ids, _)| ids.clone()).collect();
+                let unpadded_attention_masks: Vec<Vec<u32>> =
+                    token_data.into_iter().map(|(_, mask)| mask).collect();
+
+                let actual_lengths: Vec<usize> = unpadded_attention_masks
+                    .iter()
+                    .map(|mask| mask.iter().filter(|&&value| value != 0).count())
+                    .collect();
                 let max_seq_len_in_batch = actual_lengths.iter().copied().max().unwrap_or(0);
 
                 let mut token_ids = unpadded_token_ids.clone();
-                for ids in &mut token_ids {
+                let mut attention_masks = unpadded_attention_masks.clone();
+                for (ids, mask) in token_ids.iter_mut().zip(attention_masks.iter_mut()) {
                     ids.resize(max_seq_len_in_batch, 0); // 0 is usually PAD
+                    mask.resize(max_seq_len_in_batch, 0);
                 }
 
                 match &self.inner {
@@ -377,6 +431,20 @@ impl EmbeddingEngine {
                         let mean_pooled = (sum_hidden / sum_mask)?;
 
                         let normalized = l2_normalize(&mean_pooled)?;
+
+                        let mut results = Vec::with_capacity(texts.len());
+                        for i in 0..texts.len() {
+                            let vec = normalized.get(i)?.to_vec1::<f32>()?;
+                            results.push(Some(self.apply_mrl(vec)?));
+                        }
+                        Ok(results)
+                    }
+                    InnerModel::ModernBert(model) => {
+                        let token_ids_tensor = Tensor::new(token_ids, &self.device)?;
+                        let attention_mask_tensor = Tensor::new(attention_masks, &self.device)?;
+                        let hidden = model.forward(&token_ids_tensor, &attention_mask_tensor)?;
+                        let cls = hidden.i((.., 0, ..))?;
+                        let normalized = l2_normalize(&cls)?;
 
                         let mut results = Vec::with_capacity(texts.len());
                         for i in 0..texts.len() {

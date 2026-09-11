@@ -1,25 +1,6 @@
 {
     "$schema": "https://opencode.ai/config.json",
     "mcp": {
-        "memory-mcp-dev": {
-            "type": "local",
-            "command": [
-                "docker",
-                "run",
-                "--init",
-                "--rm",
-                "-i",
-                "--memory=3g",
-                "--name",
-                "memory-mcp-dev",
-                "-v",
-                "memory-mcp-1file-data:/data",
-                "-v",
-                "/home/unnamed/project/tools/memory-mcp-1file:/project:ro",
-                "ghcr.io/pomazanbohdan/memory-mcp-1file:latest"
-            ],
-            "enabled": true
-        },
         "memory-mcp-odoo-mobile": {
             "type": "local",
             "command": [

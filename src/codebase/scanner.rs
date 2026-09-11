@@ -103,7 +103,7 @@ pub fn scan_directory(root: &Path) -> crate::Result<Vec<PathBuf>> {
     let mut files = Vec::new();
     for entry in walker.filter_map(|e| e.ok()) {
         let path = entry.path();
-        if path.is_file() && !is_ignored_file(path) && is_code_file(path) {
+        if path.is_file() && !is_ignored_file_under_root(path, root) && is_code_file(path) {
             files.push(path.to_path_buf());
         }
     }
@@ -111,16 +111,24 @@ pub fn scan_directory(root: &Path) -> crate::Result<Vec<PathBuf>> {
     Ok(files)
 }
 
+/// Apply file filtering relative to a project root.
+///
+/// Absolute paths can contain hidden parent directories such as Windows
+/// temporary-directory names. Those ancestors are outside the project and
+/// must not cause a valid project file to be skipped.
+pub(crate) fn is_ignored_file_under_root(path: &Path, root: &Path) -> bool {
+    let relative = path.strip_prefix(root).unwrap_or(path);
+    is_ignored_file(relative)
+}
 pub fn is_ignored_file(path: &Path) -> bool {
     let path_str = path.to_string_lossy().to_lowercase();
 
-    // Check if any path component matches a skip directory
-    for dir in SKIP_DIRS {
-        let pattern1 = format!("/{}/", dir);
-        let pattern2 = format!("\\{}\\", dir);
-        if path_str.contains(&pattern1) || path_str.contains(&pattern2) {
-            return true;
-        }
+    // Check if any path component matches a skip directory.
+    if path.components().any(|component| {
+        let name = component.as_os_str().to_string_lossy();
+        SKIP_DIRS.iter().any(|dir| dir.eq_ignore_ascii_case(&name))
+    }) {
+        return true;
     }
 
     // Hidden path components (e.g. .secret/token.py or .venv/lib/site.py)

@@ -3,7 +3,7 @@
 
 [mcp_servers.memory]
 command = "npx"
-args = ["-y", "memory-mcp-1file@0.9.1", "--", "--data-dir", ".codex/data"]
+args = ["-y", "memory-mcp-1file@0.9.2", "--", "--data-dir", ".codex/data"]
 env = { MEMORY_MCP_ALLOWED_INDEX_ROOT = "." }
 enabled = true
 required = true

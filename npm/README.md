@@ -13,9 +13,11 @@ bunx memory-mcp-1file
 ```
 Windows installations from `0.9.1` onward normalize the release archive into
 `bin/memory-mcp.exe`, including archives with a nested target directory.
+Starting with `0.9.2`, the launcher also handles npm/npx forwarding its
+option separator before binary arguments.
 
 For OpenAI Codex, use the repository's trusted-project `.codex/config.toml`,
-which pins `memory-mcp-1file@0.9.1` and stores the database under
+which pins `memory-mcp-1file@0.9.2` and stores the database under
 `.codex/data`.
 
 

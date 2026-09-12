@@ -2,6 +2,18 @@
 
 No changes recorded.
 
+## Release v0.9.2: npm argument forwarding
+
+This patch release makes the documented Windows `npx` command and the
+project-scoped Codex command forward binary arguments correctly.
+
+### What's Fixed:
+* **npm/npx separator handling:** The launcher removes the option separator
+  when npm forwards `--` to the package command, so
+  `npx -y memory-mcp-1file@0.9.2 -- --help` reaches the binary as `--help`.
+
+---
+
 ## Release v0.9.1: Windows npm packaging & Codex
 
 This patch release fixes the Windows npm installation path and adds a

@@ -266,7 +266,7 @@ Add to your MCP settings:
 
 #### OpenAI Codex CLI (project-scoped)
 This repository includes a trusted-project `.codex/config.toml` that starts
-`memory-mcp-1file@0.9.1` over local STDIO, stores data in `.codex/data`, and
+`memory-mcp-1file@0.9.2` over local STDIO, stores data in `.codex/data`, and
 exposes a 16-tool project allowlist. The destructive tools
 `delete_memory`, `delete_project`, and `reset_all_memory` are intentionally
 excluded from the project configuration. Native Codex indexing is constrained
@@ -276,7 +276,7 @@ Project-scoped Codex configuration is loaded only after you explicitly trust
 the repository. On Windows, verify the package independently first:
 
 ```powershell
-npx -y memory-mcp-1file@0.9.1 -- --help
+npx -y memory-mcp-1file@0.9.2 -- --help
 ```
 
 Then run `codex` from the repository and verify the server with:

@@ -21,7 +21,11 @@ if (!fs.existsSync(binaryPath)) {
     process.exit(1);
 }
 
-const child = spawn(binaryPath, process.argv.slice(2), {
+// npm/npx may forward its option separator to the package command.
+const forwardedArgs =
+    process.argv[2] === "--" ? process.argv.slice(3) : process.argv.slice(2);
+
+const child = spawn(binaryPath, forwardedArgs, {
     stdio: "inherit",
     env: process.env,
 });

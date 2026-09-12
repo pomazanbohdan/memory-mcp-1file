@@ -18,6 +18,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: "24"
+
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -26,6 +31,12 @@ jobs:
 
       - name: Run release tests
         run: cargo test --release --locked --all-targets
+      - name: Run npm installer checks
+        working-directory: npm
+        run: |
+          node --check postinstall.js
+          node --test postinstall.test.js
+
 
   create-release:
     needs: verify
@@ -246,7 +257,16 @@ jobs:
           echo "Packaging $BIN_PATH to $ASSET_NAME"
           
           if [ "${{ matrix.archive_ext }}" = ".zip" ]; then
-            7z a "$ASSET_NAME" "$BIN_PATH"
+            STAGING_DIR="$(mktemp -d)"
+            trap 'rm -rf "$STAGING_DIR"' EXIT
+            cp "$BIN_PATH" "$STAGING_DIR/$BINARY_NAME"
+            (
+              cd "$STAGING_DIR"
+              7z a "$ASSET_NAME" "$BINARY_NAME"
+            )
+            mv "$STAGING_DIR/$ASSET_NAME" "$ASSET_NAME"
+            ARCHIVE_ENTRY_COUNT=$(7z l -slt "$ASSET_NAME" | awk -v name="$BINARY_NAME" '$0 == "Path = " name { count++ } END { print count + 0 }')
+            test "$ARCHIVE_ENTRY_COUNT" -eq 1
             sha256sum "$ASSET_NAME" > "$ASSET_NAME.sha256"
           else
             tar -czf "$ASSET_NAME" -C $(dirname "$BIN_PATH") "$BINARY_NAME"

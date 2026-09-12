@@ -12,10 +12,12 @@ Works perfectly with:
 *   **Claude Desktop**
 *   **Claude Code** (CLI)
 *   **Gemini CLI**
+*   **OpenAI Codex** (CLI / IDE)
 *   **Cursor**
 *   **OpenCode**
 *   **Cline** / **Roo Code**
 *   Any other MCP-compliant client.
+
 
 ### 🏆 The "All-in-One" Advantage
 
@@ -262,6 +264,40 @@ Add to your MCP settings:
 }
 ```
 
+#### OpenAI Codex CLI (project-scoped)
+This repository includes a trusted-project `.codex/config.toml` that starts
+`memory-mcp-1file@0.9.1` over local STDIO, stores data in `.codex/data`, and
+exposes a 16-tool project allowlist. The destructive tools
+`delete_memory`, `delete_project`, and `reset_all_memory` are intentionally
+excluded from the project configuration. Native Codex indexing is constrained
+to the current repository by `MEMORY_MCP_ALLOWED_INDEX_ROOT`.
+
+Project-scoped Codex configuration is loaded only after you explicitly trust
+the repository. On Windows, verify the package independently first:
+
+```powershell
+npx -y memory-mcp-1file@0.9.1 -- --help
+```
+
+Then run `codex` from the repository and verify the server with:
+
+```text
+/mcp
+```
+
+or:
+
+```bash
+codex mcp list
+codex mcp get memory
+```
+
+The `required = true` setting makes a failed Memory MCP startup visible instead
+of silently running the project without its memory workflow.
+The tool allowlist controls which MCP tools Codex loads; it is not a process
+sandbox. Trust the repository and npm package before enabling this configuration.
+
+
 > **Note:** Unlike Docker, `npx`/`bunx` runs the binary **locally** — it already has access to your filesystem, so no directory mounting is needed. To customize the data storage path, pass `--data-dir` via args:
 > ```json
 > "args": ["-y", "memory-mcp-1file", "--", "--data-dir", "/path/to/data"]
@@ -314,7 +350,8 @@ Or with Docker:
 
 ## 🛠️ Tools Available
 
-The server exposes **18 tools** to the AI model, organized into logical categories.
+The server exposes **19 tools** to the AI model, organized into logical categories.
+
 
 ### 🧠 Core Memory Management
 | Tool | Description |
@@ -353,6 +390,7 @@ The server exposes **18 tools** to the AI model, organized into logical categori
 |------|-------------|
 | `get_status` | Get system status and startup progress. |
 | `reset_all_memory` | **DANGER**: Reset all database data (requires `confirm=true`). |
+| `how_to_use` | Show tool usage examples and parameter combinations. |
 
 ---
 

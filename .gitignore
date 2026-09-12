@@ -1,6 +1,8 @@
 # Added by Spec Kitty CLI (auto-managed)
 .claude/
-.codex/
+.codex/*
+!.codex/config.toml
+.codex/data/
 .windsurf/
 .gemini/
 .cursor/

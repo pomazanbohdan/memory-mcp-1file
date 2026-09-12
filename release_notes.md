@@ -2,6 +2,24 @@
 
 No changes recorded.
 
+## Release v0.9.1: Windows npm packaging & Codex
+
+This patch release fixes the Windows npm installation path and adds a
+project-scoped OpenAI Codex configuration.
+
+### What's Fixed:
+* **Windows npm packaging:** Windows release ZIPs now contain
+  `memory-mcp.exe` at the archive root.
+* **Defensive installer normalization:** The npm installer accepts legacy
+  nested archives, rejects symlinks and duplicate binaries, and copies the
+  validated executable with exclusive-create semantics.
+* **OpenAI Codex integration:** Trusted repositories can use
+  `.codex/config.toml` with a project 16-tool allowlist and project-local data.
+* **Release verification:** npm installer syntax, regression tests, and the
+  Windows archive root layout are checked in CI.
+
+---
+
 ## Release v0.9.0: MCP Protocol, Runtime & Granite
 
 This release updates MCP lifecycle handling, the embedding runtime, and code-search

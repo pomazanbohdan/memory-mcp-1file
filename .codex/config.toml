@@ -1,0 +1,34 @@
+# Project-scoped Memory MCP configuration for OpenAI Codex.
+# Codex loads this file only after the repository is explicitly trusted.
+
+[mcp_servers.memory]
+command = "npx"
+args = ["-y", "memory-mcp-1file@0.9.1", "--", "--data-dir", ".codex/data"]
+env = { MEMORY_MCP_ALLOWED_INDEX_ROOT = "." }
+enabled = true
+required = true
+startup_timeout_sec = 30
+tool_timeout_sec = 120
+default_tools_approval_mode = "prompt"
+
+# Keep project agents on an explicit 16-tool allowlist. This controls tool
+# exposure after startup; it is not a process sandbox.
+enabled_tools = [
+    "store_memory",
+    "get_memory",
+    "update_memory",
+    "list_memories",
+    "search_memory",
+    "recall",
+    "knowledge_graph",
+    "get_valid",
+    "invalidate",
+    "get_status",
+    "index_project",
+    "recall_code",
+    "project_info",
+    "search_symbols",
+    "symbol_graph",
+    "how_to_use",
+]
+disabled_tools = ["delete_memory", "delete_project", "reset_all_memory"]

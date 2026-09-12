@@ -11,6 +11,13 @@ npx memory-mcp-1file
 # Or with bun
 bunx memory-mcp-1file
 ```
+Windows installations from `0.9.1` onward normalize the release archive into
+`bin/memory-mcp.exe`, including archives with a nested target directory.
+
+For OpenAI Codex, use the repository's trusted-project `.codex/config.toml`,
+which pins `memory-mcp-1file@0.9.1` and stores the database under
+`.codex/data`.
+
 
 ## What is this?
 
@@ -21,9 +28,7 @@ bunx memory-mcp-1file
 - **Knowledge graph** — entity extraction and relationship tracking
 - **Temporal awareness** — time-based memory queries
 
-## Configuration
-
-Use with Claude Code, Cursor, or any MCP-compatible client:
+Use with Claude Code, OpenAI Codex, Cursor, or any MCP-compatible client:
 
 ```json
 {
@@ -40,7 +45,7 @@ Use with Claude Code, Cursor, or any MCP-compatible client:
 
 ```bash
 memory-mcp --help          # Show all options
-memory-mcp --db-path /data # Custom database path
+memory-mcp --data-dir /data # Custom database path
 ```
 
 ## Supported Platforms

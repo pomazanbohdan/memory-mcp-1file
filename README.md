@@ -1,3 +1,8 @@
+# Please use https://github.com/tenatarika/vex
+
+
+
+
 # 🧠 Memory MCP Server
 
 [![Release](https://github.com/pomazanbohdan/memory-mcp-1file/actions/workflows/release.yml/badge.svg)](https://github.com/pomazanbohdan/memory-mcp-1file/actions/workflows/release.yml)
